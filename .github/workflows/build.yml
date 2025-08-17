@@ -1,0 +1,66 @@
+name: Manual Build and Release
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Get Commit Hash
+      id: vars
+      run: echo "SHORT_SHA=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v3
+      with:
+        dotnet-version: '9.0.x'
+
+    - name: Restore dependencies
+      run: dotnet restore EpubSanitizer/EpubSanitizer.sln
+
+    - name: Build
+      run: dotnet build EpubSanitizer/EpubSanitizer.sln --configuration ReleasePro --no-restore
+
+    #- name: Publish
+    #  run: dotnet publish EpubSanitizer/EpubSanitizerCLI/EpubSanitizerCLI.csproj --configuration ReleasePro --output ./publish
+    - name: Publish Self-Contained Single-File for Windows
+      run: >
+        dotnet publish EpubSanitizer/EpubSanitizerCLI/EpubSanitizerCLI.csproj 
+        --configuration ReleasePro 
+        --runtime win-x64 
+        --self-contained true 
+        -p:PublishSingleFile=true 
+        -p:PublishTrimmed=true 
+        --output ./publish
+
+    - name: Zip the publish folder
+      run: zip -r release.zip ./publish
+
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ steps.vars.outputs.SHORT_SHA }}
+        release_name: Release from commit ${{ steps.vars.outputs.SHORT_SHA }}
+        body: |
+          Automated release based on commit ${{ github.sha }}
+        draft: false
+        prerelease: true
+
+    - name: Upload Release Asset
+      id: upload-release-asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./release.zip
+        asset_name: EpubSanitizerCLI-${{ steps.vars.outputs.SHORT_SHA }}.zip
+        asset_content_type: application/zip
