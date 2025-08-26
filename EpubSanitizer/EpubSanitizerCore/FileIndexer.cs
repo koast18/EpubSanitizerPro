@@ -48,7 +48,7 @@ namespace EpubSanitizerCore
         /// <summary>
         /// XML Document for OPF file
         /// </summary>
-        internal XmlDocument opfDoc = new();
+        internal XmlDocument OpfDoc = new();
         /// <summary>
         /// NCX file path, relative to Epub root, if exists
         /// </summary>
@@ -71,7 +71,7 @@ namespace EpubSanitizerCore
         internal void IndexFiles()
         {
             LoadOpf();
-            XmlNodeList manifestNodes = opfDoc.GetElementsByTagName("manifest")[0].ChildNodes;
+            XmlNodeList manifestNodes = OpfDoc.GetElementsByTagName("manifest")[0].ChildNodes;
             foreach (XmlNode file in manifestNodes)
             {
                 // Skip comment nodes
@@ -101,7 +101,12 @@ namespace EpubSanitizerCore
                 throw new InvalidEpubException("Container file not found in the Epub file.");
             }
             containerDoc.LoadXml(container);
-            OpfPath = containerDoc.GetElementsByTagName("rootfile")[0].Attributes["full-path"].Value;
+            XmlNodeList rootfiles = containerDoc.GetElementsByTagName("rootfile");
+            if (rootfiles.Count > 1)
+            {
+                Instance.Logger("Support to EPUB 3 Multiple-Rendition Publications is not finished. Currently only the first one will be processed.");
+            }
+            OpfPath = rootfiles[0].Attributes["full-path"].Value;
             string opfcontent;
             try
             {
@@ -111,8 +116,9 @@ namespace EpubSanitizerCore
             {
                 throw new InvalidEpubException("OPF file not found in the Epub file.");
             }
-            opfDoc.LoadXml(opfcontent);
-            if (opfDoc.GetElementsByTagName("package")[0] is XmlElement packageElement && packageElement.GetAttribute("version") != "3.0")
+            OpfDoc.LoadXml(opfcontent);
+            Utils.XmlUtil.NormalizeXmlns(OpfDoc, "http://www.idpf.org/2007/opf");
+            if (OpfDoc.GetElementsByTagName("package")[0] is XmlElement packageElement && packageElement.GetAttribute("version") != "3.0")
             {
                 if (Instance.Config.GetInt("epubVer") == 3 || (Instance.Config.GetInt("epubVer") == 0 && !Instance.Config.GetBool("overwrite")))
                 {
@@ -212,7 +218,7 @@ namespace EpubSanitizerCore
         /// </summary>
         private void DetectNcx()
         {
-            if (opfDoc.GetElementsByTagName("spine")[0] is XmlElement spineElement && spineElement.GetAttribute("toc") != string.Empty)
+            if (OpfDoc.GetElementsByTagName("spine")[0] is XmlElement spineElement && spineElement.GetAttribute("toc") != string.Empty)
             {
                 string ncxid = spineElement.GetAttribute("toc");
                 foreach (OpfFile file in ManifestFiles)
@@ -251,7 +257,7 @@ namespace EpubSanitizerCore
             if (uid != null)
             {
                 string ncxuid = uid.GetAttribute("content");
-                string opfuid = Utils.OpfUtil.GetUniqueIdentifier(opfDoc);
+                string opfuid = Utils.OpfUtil.GetUniqueIdentifier(OpfDoc);
                 if (ncxuid != opfuid)
                 {
                     Instance.Logger($"NCX UID '{ncxuid}' does not match OPF UID '{opfuid}', updating NCX UID.");
@@ -271,7 +277,7 @@ namespace EpubSanitizerCore
         {
             Instance.Logger("Updating OPF manifest...");
             // Remove all existing manifest entries
-            XmlNode manifest = opfDoc.GetElementsByTagName("manifest")[0];
+            XmlNode manifest = OpfDoc.GetElementsByTagName("manifest")[0];
             while (manifest.HasChildNodes)
             {
                 manifest.RemoveChild(manifest.FirstChild);
@@ -284,7 +290,7 @@ namespace EpubSanitizerCore
                     // If the file already exists in the manifest, use the original element with updated attributes (id, href, and media-type).
                     file.originElement.SetAttribute("id", file.id);
                     file.originElement.SetAttribute("href", file.opfpath);
-                    file.originElement.SetAttribute("media-type", file.mimetype);
+                    file.originElement.SetAttribute("media-type", Instance.Config.GetBool("correctMime") ? MimeTypesMap.GetMimeType(file.opfpath) : file.mimetype);
                     if (file.properties != string.Empty)
                     {
                         file.originElement.SetAttribute("properties", file.properties);
@@ -292,7 +298,7 @@ namespace EpubSanitizerCore
                     manifest.AppendChild(file.originElement);
                     continue;
                 }
-                XmlElement newElement = opfDoc.CreateElement("item", "http://www.idpf.org/2007/opf");
+                XmlElement newElement = OpfDoc.CreateElement("item", "http://www.idpf.org/2007/opf");
                 newElement.SetAttribute("id", file.id);
                 newElement.SetAttribute("href", file.opfpath);
                 newElement.SetAttribute("media-type", file.mimetype);
@@ -303,7 +309,7 @@ namespace EpubSanitizerCore
                 manifest.AppendChild(newElement);
             }
             // Save the updated OPF document back to the file system
-            Instance.FileStorage.WriteBytes(OpfPath, Utils.XmlUtil.ToXmlBytes(opfDoc, false));
+            Instance.FileStorage.WriteBytes(OpfPath, Utils.XmlUtil.ToXmlBytes(OpfDoc, false));
         }
     }
 }

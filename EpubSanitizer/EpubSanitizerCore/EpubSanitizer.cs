@@ -5,13 +5,15 @@ namespace EpubSanitizerCore
     public class EpubSanitizer
     {
         static readonly Dictionary<string, object> ConfigList = new() {
-            {"filter", "default"},
+            {"filter", "default,privacy"},
             {"compress", 0 },
             {"cache", FS.FS.Ram },
             {"threads", Filters.Threads.Multi },
             {"sanitizeNcx", true },
             {"epubVer", 0 },
-            {"overwrite", false }
+            {"overwrite", false },
+            {"correctMime", true },
+            {"xmlCache", true }
         };
         static EpubSanitizer()
         {
@@ -145,13 +147,15 @@ namespace EpubSanitizerCore
             Console.WriteLine("e.g. EpubSanitizerCLI --filter=default,vitalsource extract.epub sanitized.epub");
             Console.WriteLine();
             Console.WriteLine("Universal options:");
-            Console.WriteLine("    --filter=xxx              The filter used for xhtml processing, default value is 'default' which only enables general filter, and 'epub3' for Epub 3 target.");
+            Console.WriteLine("    --filter=xxx              The filter used for xhtml processing, default value is 'default,privacy' which only enables general and privacy filter, and 'epub3' for Epub 3 target.");
             Console.WriteLine("    --compress=0              Compression level used for compressible file, value in number as CompressionLevel Enum of .NET, default value is 0. Not applicable to non-compressible files.");
             Console.WriteLine("    --cache=ram|disk          Where to store cache during sanitization, ram mode privides faster speed but may consume enormous memory, default value is 'ram'.");
             Console.WriteLine("    --threads=single|multi    Enable multithread processing or not, multithread provides faster speed on multi core devices, but may affect system responsibility on low end devices, default value is 'multi'.");
             Console.WriteLine("    --overwrite               Overwrite sanitized file to existing file. If no output file is provided, output will overwrite original file with this option on. If process crashed of power lost, you may lose your file. Use at your own risk!");
             Console.WriteLine("    --sanitizeNcx=true        Sanitize NCX file, enabled by default.");
             Console.WriteLine("    --epubVer=0               Target Epub version, default is 0 (auto, only use Epub 2 when source is Epub 2 and overwrite enabled, otehrwise use Epub 3), acceptable value: 0, 2, 3. You cannot force Epub 2 when source is Epub 3, doing such will be ignored.");
+            Console.WriteLine("    --correctMime=true        Correct MIME type in content.opf, enabled by default.");
+            Console.WriteLine("    --xmlCache=true           Cache XML parsing result, enabled by default, improve performance for multiple filter processing, but use more memory.");
             Console.WriteLine("Special arguments:");
             Console.WriteLine("    -v                        Print version information.");
             Console.WriteLine("    -h                        Print this general help.");
