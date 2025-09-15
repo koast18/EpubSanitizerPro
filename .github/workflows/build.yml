@@ -13,7 +13,7 @@ jobs:
 
     - name: Get Commit Hash
       id: vars
-      run: echo "SHORT_SHA=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+      run: echo "SHORT_SHA=$(git rev-parse --short HEAD)" >> $env:GITHUB_OUTPUT
 
     - name: Setup .NET
       uses: actions/setup-dotnet@v3
