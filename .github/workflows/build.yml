@@ -39,6 +39,7 @@ jobs:
         --output ./publish
 
     - name: Zip the publish folder
+      shell: bash
       run: zip -r release.zip ./publish
 
     - name: Create Release
