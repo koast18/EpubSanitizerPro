@@ -27,7 +27,7 @@ namespace EpubSanitizerCore
         /// <summary>
         /// FileSystem instance to hold file
         /// </summary>
-        internal FS.FileSystem FileStorage;
+        public FS.FileSystem FileStorage { get; internal set; }
         /// <summary>
         /// FileIndexer instance to index files, used by many filters
         /// </summary>
@@ -54,15 +54,20 @@ namespace EpubSanitizerCore
         /// <param name="archive">Opened Epub file for read</param>
         public void LoadFile(ZipArchive archive)
         {
-            if (FileStorage != null)
-            {
-                throw new InvalidOperationException("File already load to instance!");
-            }
-            FileStorage = FS.FileSystem.CreateFS(this, Config.GetEnum<FS.FS>("cache"));
+            FileStorage ??= FS.FileSystem.CreateFS(this, Config.GetEnum<FS.FS>("cache"));
             FileStorage.Import(archive);
             Logger("Build file index...");
             Indexer = new FileIndexer(this);
             Indexer.IndexFiles();
+        }
+
+        /// <summary>
+        /// Initialize an empty file system, used when you want to create a new Epub from scratch
+        /// </summary>
+        public void InitializeEmptyFS()
+        {
+            FileStorage ??= FS.FileSystem.CreateFS(this, Config.GetEnum<FS.FS>("cache"));
+            Indexer = new FileIndexer(this);
         }
 
         /// <summary>
@@ -156,6 +161,7 @@ namespace EpubSanitizerCore
             Console.WriteLine("    --epubVer=0               Target Epub version, default is 0 (auto, only use Epub 2 when source is Epub 2 and overwrite enabled, otehrwise use Epub 3), acceptable value: 0, 2, 3. You cannot force Epub 2 when source is Epub 3, doing such will be ignored.");
             Console.WriteLine("    --correctMime=true        Correct MIME type in content.opf, enabled by default.");
             Console.WriteLine("    --xmlCache=true           Cache XML parsing result, enabled by default, improve performance for multiple filter processing, but use more memory.");
+            Console.WriteLine("    --enablePlugins     Enable plugin support, disabled by default. WARNING: Plugins may contain malicious code, only enable plugins from trusted source.");
             Console.WriteLine("Special arguments:");
             Console.WriteLine("    -v                        Print version information.");
             Console.WriteLine("    -h                        Print this general help.");

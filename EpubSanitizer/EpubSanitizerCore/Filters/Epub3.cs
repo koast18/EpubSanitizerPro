@@ -31,7 +31,7 @@ namespace EpubSanitizerCore.Filters
                 {
                     foreach (XmlAttribute attr in element.Attributes.Cast<XmlAttribute>().ToArray())
                     {
-                        if (!XmlUtil.ExpectedAttribute(element.Name, attr.Name))
+                        if (!attr.Name.StartsWith("xmlns") && !XmlUtil.ExpectedAttribute(element.Name, attr.Name))
                         {
                             // Create meta element if attribute not empty
                             if (!string.IsNullOrEmpty(attr.Value))
@@ -124,10 +124,46 @@ namespace EpubSanitizerCore.Filters
                 xhtmlDoc.RemoveChild(xhtmlDoc.DocumentType);
             }
             CheckTitle(xhtmlDoc, file);
+            CheckScripted(xhtmlDoc, file);
+            CheckSvg(xhtmlDoc, file);
             ProcessDeprecatedRoleAttributes(xhtmlDoc);
             ProcessTableCellAttributes(xhtmlDoc);
             // Write back the processed content
             Instance.FileStorage.WriteXml(file, xhtmlDoc);
+        }
+
+        /// <summary>
+        /// Check if there is any script element in xhtml file, if yes, ensure scripted in properties in OPF manifest
+        /// </summary>
+        /// <param name="doc">XmlDocument object</param>
+        /// <param name="file">file path</param>
+        private void CheckScripted(XmlDocument doc, string file)
+        {
+            if (doc.GetElementsByTagName("script").Count > 0)
+            {
+                OpfFile item = Utils.OpfUtil.GetItemFromManifest(Instance.Indexer.ManifestFiles, file);
+                if (item != null && !item.properties.Contains("scripted"))
+                {
+                    item.properties = [.. item.properties, "scripted"];
+                }
+            }
+        }
+
+        /// <summary>
+        /// Check if there is any svg element in xhtml file, if yes, ensure svg in properties in OPF manifest
+        /// </summary>
+        /// <param name="doc">XmlDocument object</param>
+        /// <param name="file">file path</param>
+        private void CheckSvg(XmlDocument doc, string file)
+        {
+            if (doc.GetElementsByTagName("svg").Count > 0)
+            {
+                OpfFile item = Utils.OpfUtil.GetItemFromManifest(Instance.Indexer.ManifestFiles, file);
+                if (item != null && !item.properties.Contains("svg"))
+                {
+                    item.properties = [.. item.properties, "svg"];
+                }
+            }
         }
 
         /// <summary>
@@ -306,7 +342,7 @@ namespace EpubSanitizerCore.Filters
         {
             Instance.Logger("No nav detected in OPF manifest, creating nav.xhtml based on toc.ncx...");
             XmlDocument nav = Utils.TocGenerator.Generate(Instance.Indexer.NcxDoc);
-            string navPath = Utils.PathUtil.ComposeOpfPath(Instance.Indexer.OpfPath, "nav_epubsanitizer_generated.xhtml");
+            string navPath = Utils.PathUtil.ComposeFromRelativePath(Instance.Indexer.OpfPath, "nav_epubsanitizer_generated.xhtml");
             Instance.FileStorage.WriteBytes(navPath, Utils.XmlUtil.ToXmlBytes(nav, false));
             OpfFile NavFile = new()
             {
@@ -314,7 +350,7 @@ namespace EpubSanitizerCore.Filters
                 path = navPath,
                 id = "toc_generated",
                 mimetype = "application/xhtml+xml",
-                properties = "nav"
+                properties = ["nav"]
             };
             Instance.Indexer.ManifestFiles = [.. Instance.Indexer.ManifestFiles, NavFile];
         }
