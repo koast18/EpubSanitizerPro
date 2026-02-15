@@ -24,7 +24,7 @@ jobs:
       run: dotnet restore EpubSanitizer/EpubSanitizer.sln
 
     - name: Build
-      run: dotnet build EpubSanitizer/EpubSanitizer.sln --configuration ReleasePro --no-restore
+      run: dotnet build EpubSanitizer/EpubSanitizer.sln --configuration ReleasePro --no-restore -p:PostBuildEvent=""
 
     #- name: Publish
     #  run: dotnet publish EpubSanitizer/EpubSanitizerCLI/EpubSanitizerCLI.csproj --configuration ReleasePro --output ./publish
@@ -36,6 +36,7 @@ jobs:
         --self-contained true 
         -p:PublishSingleFile=true 
         -p:PublishTrimmed=true 
+        -p:PostBuildEvent=""
         --output ./publish
 
     - name: Zip the publish folder
