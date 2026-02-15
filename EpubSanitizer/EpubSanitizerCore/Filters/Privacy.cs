@@ -16,6 +16,22 @@ namespace EpubSanitizerCore.Filters
                 Instance.Logger("Found calibre bookmark file, removing it.");
                 Instance.FileStorage.DeleteFile("META-INF/calibre_bookmarks.txt");
             }
+            RemoveThumbsDB();
+        }
+
+        /// <summary>
+        /// Windows is shit, Thumbs.db should be removed
+        /// </summary>
+        private void RemoveThumbsDB()
+        {
+            foreach (var file in Instance.FileStorage.GetAllFiles())
+            {
+                if (file.Split('/').Last() == "Thumbs.db")
+                {
+                    Instance.FileStorage.DeleteFile(file);
+                    Instance.Indexer.DeleteFileRecord(file);
+                }
+            }
         }
 
         internal override void Process(string file)
@@ -40,7 +56,7 @@ namespace EpubSanitizerCore.Filters
             {
                 if (node is XmlElement element)
                 {
-                    return element.Name == "meta" && element.GetAttribute("name") == "Adept.expected.resource";
+                    return element.Name == "meta" && element.HasAttribute("name") && (element.GetAttribute("name") is "Adept.expected.resource" or "Adept.resource");
                 }
                 return false;
             }).ToList().ForEach(node => node.ParentNode.RemoveChild(node));

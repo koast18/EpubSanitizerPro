@@ -7,7 +7,8 @@ namespace EpubSanitizerCore.Filters
     internal class Epub3(EpubSanitizer CoreInstance) : MultiThreadFilter(CoreInstance)
     {
         static readonly Dictionary<string, object> ConfigList = new() {
-            {"epub3.guessToc", false}
+            {"epub3.guessToc", false},
+            { "epub3.correctSpine", true}
         };
         static Epub3()
         {
@@ -25,10 +26,38 @@ namespace EpubSanitizerCore.Filters
         private void UpgradeDcMetaAttributes()
         {
             List<XmlNode> metadataNodes = [.. Instance.Indexer.OpfDoc.GetElementsByTagName("metadata")[0].ChildNodes.Cast<XmlNode>()];
-            foreach (XmlNode node in metadataNodes)
+            foreach (XmlElement node in metadataNodes.Cast<XmlElement>())
             {
+                if (node.LocalName == "meta" && node.GetAttribute("property") == "meta-auth")
+                {
+                    node.ParentNode.RemoveChild(node);
+                }
                 if (node is XmlElement element && element.Prefix == "dc")
                 {
+                    if (element.LocalName == "date" && element.HasAttribute("event"))
+                    {
+                        switch (element.GetAttribute("event"))
+                        {
+                            case "creation":
+                                var newElement = Instance.Indexer.OpfDoc.CreateElement("meta", "http://www.idpf.org/2007/opf");
+                                newElement.SetAttribute("property", "dcterms:created");
+                                newElement.InnerText = element.InnerText + "T12:00:00Z";
+                                element.ParentNode.InsertAfter(newElement, element);
+                                element.ParentNode.RemoveChild(element);
+                                continue;
+                            case "modification":
+                                var modElement = Instance.Indexer.OpfDoc.CreateElement("meta", "http://www.idpf.org/2007/opf");
+                                modElement.SetAttribute("property", "dcterms:modified");
+                                modElement.InnerText = element.InnerText + "T12:00:00Z";
+                                element.ParentNode.InsertAfter(modElement, element);
+                                element.ParentNode.RemoveChild(element);
+                                continue;
+                            default:
+                                // Other event types are only removed
+                                element.RemoveAttribute("event");
+                                continue;
+                        }
+                    }
                     foreach (XmlAttribute attr in element.Attributes.Cast<XmlAttribute>().ToArray())
                     {
                         if (!attr.Name.StartsWith("xmlns") && !XmlUtil.ExpectedAttribute(element.Name, attr.Name))
@@ -127,6 +156,8 @@ namespace EpubSanitizerCore.Filters
             CheckScripted(xhtmlDoc, file);
             CheckSvg(xhtmlDoc, file);
             ProcessDeprecatedRoleAttributes(xhtmlDoc);
+            ProcessAlignAttributes(xhtmlDoc);
+            ProcessValignAttributes(xhtmlDoc);
             ProcessTableCellAttributes(xhtmlDoc);
             // Write back the processed content
             Instance.FileStorage.WriteXml(file, xhtmlDoc);
@@ -139,12 +170,19 @@ namespace EpubSanitizerCore.Filters
         /// <param name="file">file path</param>
         private void CheckScripted(XmlDocument doc, string file)
         {
+            OpfFile item = Utils.OpfUtil.GetItemFromManifest(Instance.Indexer.ManifestFiles, file);
             if (doc.GetElementsByTagName("script").Count > 0)
             {
-                OpfFile item = Utils.OpfUtil.GetItemFromManifest(Instance.Indexer.ManifestFiles, file);
                 if (item != null && !item.properties.Contains("scripted"))
                 {
                     item.properties = [.. item.properties, "scripted"];
+                }
+            }
+            else
+            {
+                if (item != null && item.properties.Contains("scripted"))
+                {
+                    item.properties = [.. item.properties.Where(p => p != "scripted")];
                 }
             }
         }
@@ -156,12 +194,19 @@ namespace EpubSanitizerCore.Filters
         /// <param name="file">file path</param>
         private void CheckSvg(XmlDocument doc, string file)
         {
-            if (doc.GetElementsByTagName("svg").Count > 0)
+            OpfFile item = Utils.OpfUtil.GetItemFromManifest(Instance.Indexer.ManifestFiles, file);
+            if (doc.GetElementsByTagName("svg").Count > 0 || doc.GetElementsByTagName("svg", "http://www.w3.org/2000/svg").Count > 0)
             {
-                OpfFile item = Utils.OpfUtil.GetItemFromManifest(Instance.Indexer.ManifestFiles, file);
                 if (item != null && !item.properties.Contains("svg"))
                 {
                     item.properties = [.. item.properties, "svg"];
+                }
+            }
+            else
+            {
+                if (item != null && item.properties.Contains("svg"))
+                {
+                    item.properties = [.. item.properties.Where(p => p != "svg")];
                 }
             }
         }
@@ -254,26 +299,46 @@ namespace EpubSanitizerCore.Filters
             Dictionary<string, List<XmlElement>> SpacingRecord = [];
             foreach (XmlElement table in doc.GetElementsByTagName("table").Cast<XmlElement>().ToArray())
             {
-                if (table.HasAttribute("cellpadding"))
+                if (table.HasAttribute("border"))
                 {
-                    if (PaddingRecord.ContainsKey(table.GetAttribute("cellpadding")))
+                    if (int.TryParse(table.GetAttribute("border"), out int borderValue))
                     {
-                        PaddingRecord[table.GetAttribute("cellpadding")].Add(table);
+                        if (borderValue > 0)
+                        {
+                            table.SetAttribute("border", "1");
+                        }
+                        else if (borderValue == 0)
+                        {
+                            table.SetAttribute("border", "");
+                        }
                     }
                     else
                     {
-                        PaddingRecord[table.GetAttribute("cellpadding")] = [table];
+                        table.RemoveAttribute("border");
+                    }
+                }
+                if (table.HasAttribute("cellpadding"))
+                {
+                    string paddingValue = new([.. table.GetAttribute("cellpadding").Where(c => char.IsDigit(c) || c == '%')]);
+                    if (PaddingRecord.ContainsKey(paddingValue))
+                    {
+                        PaddingRecord[paddingValue].Add(table);
+                    }
+                    else
+                    {
+                        PaddingRecord[paddingValue] = [table];
                     }
                 }
                 if (table.HasAttribute("cellspacing"))
                 {
-                    if (SpacingRecord.ContainsKey(table.GetAttribute("cellspacing")))
+                    string spacingValue = new([.. table.GetAttribute("cellpadding").Where(c => char.IsDigit(c) || c == '%')]);
+                    if (SpacingRecord.ContainsKey(spacingValue))
                     {
-                        SpacingRecord[table.GetAttribute("cellspacing")].Add(table);
+                        SpacingRecord[spacingValue].Add(table);
                     }
                     else
                     {
-                        SpacingRecord[table.GetAttribute("cellspacing")] = [table];
+                        SpacingRecord[spacingValue] = [table];
                     }
                 }
             }
@@ -320,6 +385,106 @@ namespace EpubSanitizerCore.Filters
         }
 
         /// <summary>
+        /// Convert valign attributes to CSS styles to comply with Epub 3 standards.
+        /// </summary>
+        /// <param name="doc">XmlDocument object</param>
+        private static void ProcessValignAttributes(XmlDocument doc)
+        {
+            Dictionary<string, List<XmlElement>> Record = [];
+            foreach (XmlElement table in doc.GetElementsByTagName("*").Cast<XmlElement>().ToArray())
+            {
+                if (table.HasAttribute("valign"))
+                {
+                    if (Record.ContainsKey(table.GetAttribute("valign")))
+                    {
+                        Record[table.GetAttribute("valign")].Add(table);
+                    }
+                    else
+                    {
+                        Record[table.GetAttribute("valign")] = [table];
+                    }
+                }
+            }
+            // Generate CSS styles for each unique cellpadding and cellspacing value
+            StringBuilder cssStyles = new();
+            foreach (var type in Record.Keys)
+            {
+                string style = $@".valign-{type}{{
+    vertical-align: {((type == "center") ? "middle" : type)};
+}}";
+                cssStyles.AppendLine(style);
+                foreach (var table in Record[type])
+                {
+                    XmlUtil.AddCssClass(table, $"valign-{type}");
+                    table.RemoveAttribute("valign");
+                }
+            }
+            if (cssStyles.Length == 0)
+            {
+                return;
+            }
+            // If there are any styles, add them to the head of the document
+            XmlElement head = doc.GetElementsByTagName("head")[0] as XmlElement;
+            XmlElement styleElement = doc.CreateElement("style", "http://www.w3.org/1999/xhtml");
+            styleElement.SetAttribute("type", "text/css");
+            styleElement.InnerText = cssStyles.ToString();
+            head.AppendChild(styleElement);
+        }
+
+        /// <summary>
+        /// Convert align attributes to CSS styles to comply with Epub 3 standards.
+        /// </summary>
+        /// <param name="doc">XmlDocument object</param>
+        private static void ProcessAlignAttributes(XmlDocument doc)
+        {
+            Dictionary<string, List<XmlElement>> Record = [];
+            foreach (XmlElement table in doc.GetElementsByTagName("*").Cast<XmlElement>().ToArray())
+            {
+                if (table.HasAttribute("align"))
+                {
+                    if (table.GetAttribute("align") == "char")
+                    {
+                        table.RemoveAttribute("align");
+                        table.RemoveAttribute("char");
+                        continue;
+                    }
+                    if (Record.ContainsKey(table.GetAttribute("align")))
+                    {
+                        Record[table.GetAttribute("align")].Add(table);
+                    }
+                    else
+                    {
+                        Record[table.GetAttribute("align")] = [table];
+                    }
+                }
+            }
+            // Generate CSS styles for each unique cellpadding and cellspacing value
+            StringBuilder cssStyles = new();
+            foreach (var type in Record.Keys)
+            {
+                string style = $@".align-{type}{{
+    text-align: {type};
+}}";
+                cssStyles.AppendLine(style);
+                foreach (var table in Record[type])
+                {
+                    XmlUtil.AddCssClass(table, $"align-{type}");
+                    table.RemoveAttribute("align");
+                }
+            }
+            if (cssStyles.Length == 0)
+            {
+                return;
+            }
+            // If there are any styles, add them to the head of the document
+            XmlElement head = doc.GetElementsByTagName("head")[0] as XmlElement;
+            XmlElement styleElement = doc.CreateElement("style", "http://www.w3.org/1999/xhtml");
+            styleElement.SetAttribute("type", "text/css");
+            styleElement.InnerText = cssStyles.ToString();
+            head.AppendChild(styleElement);
+        }
+
+        /// <summary>
         /// Check whether there is a xhtml file with nav in properties in OPF manifest or guess disabled
         /// </summary>
         /// <returns>true if nav is detected, false otherwise</returns>
@@ -329,6 +494,11 @@ namespace EpubSanitizerCore.Filters
             {
                 if (file.mimetype == "application/xhtml+xml" && file.originElement.GetAttribute("properties").Split(' ').Contains("nav"))
                 {
+                    if (Instance.Indexer.OpfDoc.GetElementsByTagName("spine")[0]?.Attributes?["page-map"] != null)
+                    {
+                        Instance.Logger("Found Adobe style page number in spine, converting to page-list in nav...");
+                        Utils.TocGenerator.ConvertPageMapToPageList(Instance.FileStorage.ReadXml(file.path), Instance, file.path);
+                    }
                     return true;
                 }
             }
@@ -343,7 +513,17 @@ namespace EpubSanitizerCore.Filters
             Instance.Logger("No nav detected in OPF manifest, creating nav.xhtml based on toc.ncx...");
             XmlDocument nav = Utils.TocGenerator.Generate(Instance.Indexer.NcxDoc);
             string navPath = Utils.PathUtil.ComposeFromRelativePath(Instance.Indexer.OpfPath, "nav_epubsanitizer_generated.xhtml");
-            Instance.FileStorage.WriteBytes(navPath, Utils.XmlUtil.ToXmlBytes(nav, false));
+            if (Instance.Indexer.OpfDoc.GetElementsByTagName("spine")[0]?.Attributes?["page-map"] != null)
+            {
+                Instance.Logger("Found Adobe style page number in spine, converting to page-list in nav...");
+                Utils.TocGenerator.ConvertPageMapToPageList(nav, Instance, navPath);
+            }
+            Instance.FileStorage.WriteXml(navPath, nav);
+            if (Instance.Config.GetBool("epub3.correctSpine"))
+            {
+                Instance.Logger("Correcting spine order based on NCX...");
+                Utils.OpfUtil.CorrectSpineOrderFromNcx(Instance.Indexer.OpfDoc, Instance.Indexer.NcxDoc);
+            }
             OpfFile NavFile = new()
             {
                 opfpath = "nav_epubsanitizer_generated.xhtml",
@@ -360,6 +540,7 @@ namespace EpubSanitizerCore.Filters
             Console.WriteLine("Filter applied to Epub 3 files.");
             Console.WriteLine("Options:");
             Console.WriteLine("    --epub3.guessToc=false    If true, will try to guess the toc file from OPF instead of creating new one if possible, default is false.");
+            Console.WriteLine("    --epub3.correctSpine=true   If true, will try to correct the spine order based on NCX if possible, default is true.");
         }
     }
 }

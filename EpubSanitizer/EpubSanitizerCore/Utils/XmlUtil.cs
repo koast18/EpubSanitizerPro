@@ -6,21 +6,6 @@ namespace EpubSanitizerCore.Utils
     internal static class XmlUtil
     {
         /// <summary>
-        /// Return parent node in XmlElement if possible
-        /// </summary>
-        /// <param name="element">XmlElement</param>
-        /// <returns>Parent XmlElement if exists</returns>
-        internal static XmlElement? GetParent(XmlElement element)
-        {
-            XmlNode? parent = element.ParentNode;
-            if (parent != null && parent is XmlElement parentElement)
-            {
-                return parentElement;
-            }
-            return null;
-        }
-
-        /// <summary>
         /// Serializes an XmlDocument to a string with optional indentation (minification).
         /// </summary>
         /// <param name="doc">The XmlDocument to serialize.</param>
@@ -82,18 +67,13 @@ namespace EpubSanitizerCore.Utils
         /// <param name="targetNamespaceUri">the namespace require normalize</param>
         public static void NormalizeXmlns(XmlDocument doc, string targetNamespaceUri)
         {
-            List<XmlElement> elementsToReplace = [];
             foreach (XmlElement element in doc.GetElementsByTagName("*").Cast<XmlElement>().ToArray())
             {
                 if (element.NamespaceURI == targetNamespaceUri)
                 {
-                    elementsToReplace.Add(element);
+                    element.Prefix = string.Empty;
                 }
 
-            }
-            foreach (XmlElement oldElement in elementsToReplace)
-            {
-                oldElement.Prefix = string.Empty;
             }
             XmlElement root = doc.DocumentElement;
             foreach (XmlAttribute attr in root.Attributes)
@@ -105,40 +85,38 @@ namespace EpubSanitizerCore.Utils
                 }
             }
             root.SetAttribute("xmlns", targetNamespaceUri);
-            foreach (XmlElement element in doc.GetElementsByTagName("*").Cast<XmlElement>().ToArray())
+            // Recursive mode
+            bool needAnotherPass = true;
+            while (needAnotherPass)
             {
-                if (element.NamespaceURI == string.Empty)
+                needAnotherPass = false;
+                foreach (XmlElement element in doc.GetElementsByTagName("*").Cast<XmlElement>().ToArray())
                 {
-                    // Recreate with proper namespace URI
-                    XmlElement newElement = doc.CreateElement(element.LocalName, targetNamespaceUri);
-                    // Copy attributes and children
-                    foreach (XmlAttribute attr in element.Attributes)
+                    if (element.NamespaceURI == string.Empty)
                     {
-                        newElement.SetAttribute(attr.Name, attr.Value);
+                        // Recreate with proper namespace URI
+                        XmlElement newElement = doc.CreateElement(element.LocalName, targetNamespaceUri);
+                        CopyTo(element, newElement);
+                        // Replace the old element with the new one
+                        element.ParentNode.ReplaceChild(newElement, element);
+                        needAnotherPass = true;
                     }
-                    foreach (XmlNode child in element.ChildNodes)
+                    foreach (XmlAttribute attr in element.Attributes.Cast<XmlAttribute>().ToArray())
                     {
-                        XmlNode importedChild = doc.ImportNode(child, true);
-                        newElement.AppendChild(importedChild);
-                    }
-                    // Replace the old element with the new one
-                    element.ParentNode.ReplaceChild(newElement, element);
-                }
-                foreach (XmlAttribute attr in element.Attributes.Cast<XmlAttribute>().ToArray())
-                {
-                    if (attr.Prefix != string.Empty && attr.NamespaceURI == targetNamespaceUri)
-                    {
-                        // create a new attribute without prefix
-                        XmlAttribute newAttr = doc.CreateAttribute(attr.LocalName);
-                        newAttr.Value = attr.Value;
-                        element.Attributes.Append(newAttr);
-                        // Remove the prefix and namespace URI from the attribute
-                        element.Attributes.Remove(attr);
-                    }
-                    if (attr.Name == "xmlns" && attr.Value == targetNamespaceUri)
-                    {
-                        // Remove the xmlns attribute if it is not needed
-                        element.Attributes.Remove(attr);
+                        if (attr.Prefix != string.Empty && attr.NamespaceURI == targetNamespaceUri)
+                        {
+                            // create a new attribute without prefix
+                            XmlAttribute newAttr = doc.CreateAttribute(attr.LocalName);
+                            newAttr.Value = attr.Value;
+                            element.Attributes.Append(newAttr);
+                            // Remove the prefix and namespace URI from the attribute
+                            element.Attributes.Remove(attr);
+                        }
+                        if (attr.Name == "xmlns" && (attr.Value == targetNamespaceUri || attr.Value == string.Empty))
+                        {
+                            // Remove the xmlns attribute if it is not needed
+                            element.Attributes.Remove(attr);
+                        }
                     }
                 }
             }
@@ -203,6 +181,95 @@ namespace EpubSanitizerCore.Utils
                 return value;
             }
             return attributeName;
+        }
+
+        /// <summary>
+        /// Provides a set of HTML tag names that are considered inline elements according to HTML specifications.
+        /// </summary>
+        private static readonly HashSet<string> InlineElements =
+        [
+            "a", "abbr", "b", "bdi", "bdo", "br", "button", "cite", "code", "data", "datalist", "dfn", "em", "i", "iframe",
+            "img", "input", "kbd", "label", "link", "map", "mark", "meter", "output", "progress", "q", "s", "samp", "script",
+            "select", "slot", "small", "span", "strong", "sub", "sup", "template", "textarea", "time", "u", "var", "video", "wbr"
+        ];
+
+        /// <summary>
+        /// Determines whether the specified HTML tag name represents an inline element.
+        /// </summary>
+        /// <param name="tagName">The name of the HTML tag to evaluate. The comparison is case-insensitive.</param>
+        /// <returns>true if the tag name corresponds to a recognized inline HTML element; otherwise, false.</returns>
+        public static bool IsInline(string tagName)
+        {
+            return InlineElements.Contains(tagName.ToLowerInvariant());
+        }
+
+        /// <summary>
+        /// Copy all attributes and child nodes from source XmlElement to target XmlElement, two elements must belong to the same XmlDocument.
+        /// </summary>
+        /// <param name="source">source element</param>
+        /// <param name="target">target element</param>
+        internal static void CopyTo(XmlElement source, XmlElement target)
+        {
+            foreach (XmlAttribute attr in source.Attributes)
+            {
+                target.SetAttribute(attr.LocalName, attr.NamespaceURI, attr.Value);
+            }
+            while (source.HasChildNodes)
+            {
+                target.AppendChild(source.FirstChild);
+            }
+        }
+
+        /// <summary>
+        /// Copy all attributes and child nodes from source XmlElement to target XmlElement, two elements can belong to different XmlDocument, but slower than CopyTo.
+        /// </summary>
+        /// <param name="source">source element</param>
+        /// <param name="target">target element</param>
+        internal static void CopyToAcross(XmlElement source, XmlElement target)
+        {
+            foreach (XmlAttribute attr in source.Attributes)
+            {
+                target.SetAttribute(attr.LocalName, attr.NamespaceURI, attr.Value);
+            }
+            foreach (XmlNode child in source.ChildNodes)
+            {
+                XmlNode importedChild = target.OwnerDocument.ImportNode(child, true);
+                target.AppendChild(importedChild);
+            }
+        }
+
+        /// <summary>
+        /// Copy all attributes and child nodes from source XmlElement to target XmlElement with override empty namespace, two elements can belong to different XmlDocument, but slower than CopyTo.
+        /// </summary>
+        /// <param name="source">source element</param>
+        /// <param name="target">target element</param>
+        /// <param name="namespaceUri">target namespace</param>
+        internal static void CopyToAcrossOverrideEmptyNamespace(XmlElement source, XmlElement target, string namespaceUri)
+        {
+            foreach (XmlAttribute attr in source.Attributes)
+            {
+                if (target.NamespaceURI == namespaceUri && attr.NamespaceURI == string.Empty)
+                {
+                    target.SetAttribute(attr.LocalName, attr.Value);
+                } else
+                {
+                    target.SetAttribute(attr.LocalName, attr.NamespaceURI == string.Empty ? namespaceUri : attr.NamespaceURI, attr.Value);
+                }
+            }
+            foreach (XmlNode child in source.ChildNodes)
+            {
+                if (child is XmlElement childElement && childElement.NamespaceURI == string.Empty)
+                {
+                    XmlElement newChildElement = target.OwnerDocument.CreateElement(childElement.LocalName, namespaceUri);
+                    CopyToAcrossOverrideEmptyNamespace(childElement, newChildElement, namespaceUri);
+                    target.AppendChild(newChildElement);
+                }
+                else
+                {
+                    XmlNode importedChild = target.OwnerDocument.ImportNode(child, true);
+                    target.AppendChild(importedChild);
+                }
+            }
         }
     }
 }

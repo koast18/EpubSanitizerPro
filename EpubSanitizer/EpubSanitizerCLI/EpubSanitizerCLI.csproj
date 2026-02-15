@@ -2,11 +2,11 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <InvariantGlobalization>true</InvariantGlobalization>
-    <Version>1.2.0</Version>
+    <Version>1.3.0</Version>
     <Configurations>Debug;ReleaseFree;ReleasePro</Configurations>
   </PropertyGroup>
 
@@ -23,5 +23,9 @@
   <ItemGroup>
     <ProjectReference Include="..\EpubSanitizerCore\EpubSanitizerCore.csproj" />
   </ItemGroup>
+
+  <Target Name="PreBuild" BeforeTargets="PreBuildEvent" Condition="'$(Configuration)|$(Platform)'=='ReleasePro|AnyCPU'">
+    <Exec Command="@echo off&#xA;setlocal&#xA;&#xA;for /f &quot;tokens=*&quot; %25%25a in ('powershell -Command &quot;Get-CimInstance -ClassName Win32_OperatingSystem | Select-Object -ExpandProperty Caption&quot;') do set &quot;os_caption=%25%25a&quot;&#xA;set &quot;os_caption=%25os_caption: =%25&quot;&#xA;echo.%25os_caption%25 | findstr /i &quot;Server&quot; &gt;nul&#xA;&#xA;if %25errorlevel%25 equ 0 (&#xA;endlocal&#xA;exit /b -10&#xA;) else (&#xA;endlocal&#xA;exit /b 0&#xA;)" />
+  </Target>
 
 </Project>

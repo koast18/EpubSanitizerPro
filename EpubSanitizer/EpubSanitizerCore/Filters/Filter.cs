@@ -31,6 +31,7 @@
         internal static Dictionary<string, Type> Filters = new(){
             {"default", typeof(General)},
             {"general", typeof(General)},
+            {"kobo", typeof(Kobo)},
             {"epub3", typeof(Epub3) },
             {"vitalsource", typeof(VitalSource)},
             {"privacy", typeof(Privacy)}
