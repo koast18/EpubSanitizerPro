@@ -190,7 +190,7 @@ namespace EpubSanitizerCore.Utils
         [
             "a", "abbr", "b", "bdi", "bdo", "br", "button", "cite", "code", "data", "datalist", "dfn", "em", "i", "iframe",
             "img", "input", "kbd", "label", "link", "map", "mark", "meter", "output", "progress", "q", "s", "samp", "script",
-            "select", "slot", "small", "span", "strong", "sub", "sup", "template", "textarea", "time", "u", "var", "video", "wbr"
+            "select", "slot", "small", "span", "strong", "sub", "sup", "template", "textarea", "time", "u", "var", "video", "wbr", "pre"
         ];
 
         /// <summary>
@@ -219,6 +219,35 @@ namespace EpubSanitizerCore.Utils
                 target.AppendChild(source.FirstChild);
             }
         }
+
+        /// <summary>
+        /// Copy all attributes and child nodes from source XmlElement to target XmlElement, two elements must belong to the same XmlDocument.
+        /// </summary>
+        /// <param name="source">source element</param>
+        /// <param name="target">target element</param>
+        /// <param name="prefix">target prefix<
+        /// <param name="namespaceURI">target namespace URI</param>
+        internal static void CopyToWithNewNamespace(XmlElement source, XmlElement target, string prefix, string namespaceURI)
+        {
+            foreach (XmlAttribute attr in source.Attributes)
+            {
+                target.SetAttribute(attr.LocalName, attr.NamespaceURI, attr.Value);
+            }
+            foreach (XmlNode child in source.ChildNodes.Cast<XmlNode>().ToArray())
+            {
+                if (child is XmlElement childElement)
+                {
+                    XmlElement newChild = target.OwnerDocument.CreateElement(prefix, childElement.LocalName, namespaceURI);
+                    CopyToWithNewNamespace(childElement, newChild, prefix, namespaceURI);
+                    target.AppendChild(newChild);
+                }
+                else
+                {
+                    target.AppendChild(child);
+                }
+            }
+        }
+
 
         /// <summary>
         /// Copy all attributes and child nodes from source XmlElement to target XmlElement, two elements can belong to different XmlDocument, but slower than CopyTo.
@@ -251,7 +280,8 @@ namespace EpubSanitizerCore.Utils
                 if (target.NamespaceURI == namespaceUri && attr.NamespaceURI == string.Empty)
                 {
                     target.SetAttribute(attr.LocalName, attr.Value);
-                } else
+                }
+                else
                 {
                     target.SetAttribute(attr.LocalName, attr.NamespaceURI == string.Empty ? namespaceUri : attr.NamespaceURI, attr.Value);
                 }
@@ -269,6 +299,43 @@ namespace EpubSanitizerCore.Utils
                     XmlNode importedChild = target.OwnerDocument.ImportNode(child, true);
                     target.AppendChild(importedChild);
                 }
+            }
+        }
+
+        /// <summary>
+        /// Add CSS styles to the head of the document, if cssStyles is not empty.
+        /// </summary>
+        /// <param name="doc">xhtml document</param>
+        /// <param name="cssStyles">StringBuilder with css strings</param>
+        internal static void AddCssToHead(XmlDocument doc, StringBuilder cssStyles)
+        {
+            if (cssStyles.Length == 0)
+            {
+                return;
+            }
+            // If there are any styles, add them to the head of the document
+            XmlElement head = doc.GetElementsByTagName("head")[0] as XmlElement;
+            // Try to reuse existing style element if exist, otherwise create a new one
+            if (head.GetElementsByTagName("style").Count > 0)
+            {
+                XmlElement styleElement = head.GetElementsByTagName("style")[0] as XmlElement;
+                if (styleElement.HasAttribute("media"))
+                {
+                    // If the existing style element has media attribute, we should not reuse it, otherwise it may cause unexpected issue
+                    styleElement = doc.CreateElement("style", "http://www.w3.org/1999/xhtml");
+                    styleElement.SetAttribute("type", "text/css");
+                    styleElement.InnerText = cssStyles.ToString();
+                    head.AppendChild(styleElement);
+                    return;
+                }
+                styleElement.InnerText += cssStyles.ToString();
+            }
+            else
+            {
+                XmlElement styleElement = doc.CreateElement("style", "http://www.w3.org/1999/xhtml");
+                styleElement.SetAttribute("type", "text/css");
+                styleElement.InnerText = cssStyles.ToString();
+                head.AppendChild(styleElement);
             }
         }
     }

@@ -1,7 +1,6 @@
 ﻿using EpubSanitizerCore.Utils;
 using HeyRed.Mime;
 using System.Collections.Concurrent;
-using System.Reflection.Metadata;
 using System.Xml;
 
 namespace EpubSanitizerCore.Filters
@@ -10,12 +9,15 @@ namespace EpubSanitizerCore.Filters
     {
 
         static readonly Dictionary<string, object> ConfigList = new() {
-            {"general.replaceInlineWithBlock", true}
+            {"general.replaceInlineWithBlock", true},
+            {"general.fullIdDedup", false}
         };
         static General()
         {
             ConfigManager.AddDefaultConfig(ConfigList);
         }
+
+        static readonly string[] HeadItems = ["h1", "h2", "h3", "h4", "h5", "h6"];
 
         /// <summary>
         /// General filter only processes XHTML files.
@@ -30,7 +32,7 @@ namespace EpubSanitizerCore.Filters
 
         internal override void Process(string file)
         {
-            XmlDocument xhtmlDoc = Instance.FileStorage.ReadXml(file); 
+            XmlDocument xhtmlDoc = Instance.FileStorage.ReadXml(file);
             if (xhtmlDoc.DocumentElement.GetAttribute("xmlns") != "http://www.w3.org/1999/xhtml")
             {
                 // Rebuild the document with correct namespace
@@ -45,10 +47,12 @@ namespace EpubSanitizerCore.Filters
                 Instance.Logger($"Error loading XHTML file {file}, skipping...");
                 return;
             }
+            SanitizeID(xhtmlDoc);
             RemoveInvalidNamespace(xhtmlDoc);
+            RemoveInvalidAttribute(xhtmlDoc);
             CheckNonLinearContent(xhtmlDoc, file);
             FixDuplicateContentType(xhtmlDoc);
-            FixDuokanNoteID(xhtmlDoc);
+            DedupId(xhtmlDoc, Instance.Config.GetBool("general.fullIdDedup") ? "*" : "aside");
             RemoveAmazonAttr(xhtmlDoc);
             FixExternalLink(file, xhtmlDoc);
             FixInvalidWidthHeight(xhtmlDoc);
@@ -60,7 +64,13 @@ namespace EpubSanitizerCore.Filters
             FixPagebreak(xhtmlDoc);
             FixType(xhtmlDoc);
             FixHgroup(xhtmlDoc);
-            EscapeUrl(xhtmlDoc);
+            EscapeUrl(xhtmlDoc, file);
+            FixU201D(xhtmlDoc);
+            FixListChild(xhtmlDoc);
+            FixColgroupSpan(xhtmlDoc);
+            FixHeadWithChild(xhtmlDoc);
+            FixTheadLocation(xhtmlDoc);
+            SplitTable(xhtmlDoc);
             if (Instance.Config.GetBool("correctMime"))
             {
                 FixSourceMime(xhtmlDoc);
@@ -79,9 +89,227 @@ namespace EpubSanitizerCore.Filters
         }
 
         /// <summary>
+        /// One table only can have one thead element and must be first, split if required
+        /// </summary>
+        /// <param name="xhtmlDoc">xhtml document</param>
+        private static void SplitTable(XmlDocument xhtmlDoc)
+        {
+            int i = 1;
+            foreach (XmlElement table in xhtmlDoc.GetElementsByTagName("table").Cast<XmlElement>().ToArray())
+            {
+                while (table.GetElementsByTagName("thead").Count > 1)
+                {
+                    // split to multiple tables with one thead each
+                    XmlElement parent = table.ParentNode as XmlElement;
+                    XmlElement newTable = xhtmlDoc.CreateElement("table", "http://www.w3.org/1999/xhtml");
+                    foreach (XmlAttribute attr in table.Attributes)
+                    {
+                        if (attr.LocalName == "id")
+                        {
+                            // Generate new id for the new table
+                            newTable.SetAttribute("id", attr.Value + "-split-" + i.ToString());
+                            i++;
+                        }
+                        else
+                        {
+                            newTable.SetAttribute(attr.Name, attr.Value);
+                        }
+                    }
+                    do
+                    {
+                        newTable.PrependChild(table.LastChild);
+                    } while (table.HasChildNodes && newTable.FirstChild.LocalName != "thead");
+                    parent.InsertAfter(newTable, table);
+                }
+            }
+        }
+
+
+        /// <summary>
+        /// Remove empty ids
+        /// </summary>
+        /// <param name="xhtmlDoc">xhtml document</param>
+        private static void SanitizeID(XmlDocument xhtmlDoc)
+        {
+            foreach (XmlElement ele in xhtmlDoc.GetElementsByTagName("*").Cast<XmlElement>().ToArray())
+            {
+                if (ele.HasAttribute("id"))
+                {
+                    if (ele.GetAttribute("id") == string.Empty)
+                    {
+                        ele.RemoveAttribute("id");
+                        continue;
+                    }
+                    if (ele.GetAttribute("id").Contains(' '))
+                    {
+                        ele.SetAttribute("id", ele.GetAttribute("id").Replace(' ', '_'));
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// thead must be direct child of table, if not, move it to correct location, try parent of parent if parent is not table, to avoid breaking existing style as much as possible
+        /// </summary>
+        /// <param name="xhtmlDoc">xhtml document</param>
+        private static void FixTheadLocation(XmlDocument xhtmlDoc)
+        {
+            foreach (XmlElement ele in xhtmlDoc.GetElementsByTagName("thead").Cast<XmlElement>().ToArray())
+            {
+                if (ele.ParentNode.LocalName != "table")
+                {
+                    // Try parent of parent ...
+                    XmlElement parent = ele.ParentNode.ParentNode as XmlElement;
+                    while (parent != null)
+                    {
+                        if (parent.LocalName == "table")
+                        {
+                            parent.PrependChild(ele);
+                            break;
+                        }
+                        else
+                        {
+                            parent = parent.ParentNode as XmlElement;
+                        }
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Move block element in title to after title
+        /// </summary>
+        /// <param name="xhtmlDoc">xhtml document</param>
+        private static void FixHeadWithChild(XmlDocument xhtmlDoc)
+        {
+            foreach (string type in HeadItems)
+            {
+                foreach (XmlElement ele in xhtmlDoc.GetElementsByTagName(type).Cast<XmlElement>().ToArray())
+                {
+                    foreach (XmlNode child in ele.ChildNodes.Cast<XmlNode>().ToArray())
+                    {
+                        if (child is XmlElement childEle)
+                        {
+                            if (childEle.NamespaceURI != xhtmlDoc.DocumentElement.NamespaceURI)
+                            {
+                                continue;
+                            }
+                            bool hasBlock = Utils.XmlUtil.IsInline(childEle.LocalName);
+                            foreach (XmlElement subChild in childEle.GetElementsByTagName("*").Cast<XmlElement>().ToArray())
+                            {
+                                hasBlock = hasBlock || !Utils.XmlUtil.IsInline(subChild.LocalName);
+                                if (hasBlock)
+                                {
+                                    ele.ParentNode.InsertAfter(childEle, ele);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Remove span attr when colgroup has col children
+        /// </summary>
+        /// <param name="xhtmlDoc">xhtml document</param>
+        private static void FixColgroupSpan(XmlDocument xhtmlDoc)
+        {
+            foreach (XmlElement colgroup in xhtmlDoc.GetElementsByTagName("colgroup").Cast<XmlElement>().ToArray())
+            {
+                if (colgroup.GetElementsByTagName("col").Count > 0)
+                {
+                    colgroup.RemoveAttribute("span");
+                }
+            }
+        }
+
+        /// <summary>
+        /// ul/ol element only allow specified child elements, if find any invalid ones, wrap them with the li before
+        /// </summary>
+        /// <param name="xhtmlDoc">xhtml document</param>
+        private static void FixListChild(XmlDocument xhtmlDoc)
+        {
+            string[] tags = ["ul", "ol", "menu"];
+            string[] ulTags = ["li", "script", "template"];
+            foreach (string tag in tags)
+            {
+                foreach (XmlElement list in xhtmlDoc.GetElementsByTagName(tag).Cast<XmlElement>().ToArray())
+                {
+                    foreach (XmlNode child in list.ChildNodes.Cast<XmlNode>().ToArray())
+                    {
+                        if (child is XmlElement el && !ulTags.Contains(el.Name.ToLowerInvariant()))
+                        {
+                            // Move to child of the existing li before
+                            if (child.PreviousSibling is XmlElement lastLi && lastLi.Name.Equals("li", StringComparison.InvariantCultureIgnoreCase))
+                            {
+                                lastLi.AppendChild(child);
+                            }
+                            else
+                            {
+                                // Create a new li to wrap the element
+                                XmlElement li = xhtmlDoc.CreateElement("li", xhtmlDoc.DocumentElement.NamespaceURI);
+                                list.InsertBefore(li, child);
+                                li.AppendChild(child);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Remove attr in any body element that has "-" but not start with "data-" or "aria-" and not include ":"
+        /// </summary>
+        /// <param name="xhtmlDoc"></param>
+        private static void RemoveInvalidAttribute(XmlDocument xhtmlDoc)
+        {
+            foreach (XmlElement element in (xhtmlDoc.GetElementsByTagName("body")[0] as XmlElement).GetElementsByTagName("*").Cast<XmlElement>().ToArray())
+            {
+                foreach (XmlAttribute attr in element.Attributes.Cast<XmlAttribute>().ToArray())
+                {
+                    if (attr.Name.Contains('-') && !attr.Name.StartsWith("data-") && !attr.Name.StartsWith("aria-") && !attr.Name.Contains(':'))
+                    {
+                        element.RemoveAttributeNode(attr);
+                    }
+                    if (attr.Name == "start" && element.LocalName != "ol")
+                    {
+                        element.RemoveAttributeNode(attr);
+                    }
+                    if (attr.Name == "colspan" && ((element.LocalName != "td" && element.LocalName != "th") || !int.TryParse(attr.Value, out _)))
+                    {
+                        element.RemoveAttributeNode(attr);
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Fix incorrect usage of U+201D mark sign in xhtml
+        /// </summary>
+        /// <param name="xhtmlDoc">XHTML document object</param>
+        private static void FixU201D(XmlDocument xhtmlDoc)
+        {
+            if (xhtmlDoc.InnerXml.Contains("\"”") && xhtmlDoc.InnerXml.Contains("”\""))
+            {
+                foreach (XmlElement element in xhtmlDoc.GetElementsByTagName("*"))
+                {
+                    foreach (XmlAttribute attr in element.Attributes)
+                    {
+                        if (attr.Value.StartsWith('”') && attr.Value.EndsWith('”'))
+                        {
+                            attr.Value = attr.Value.Replace("”", null);
+                        }
+                    }
+                }
+            }
+        }
+
+        /// <summary>
         /// idpf.org and w3.org namespace are not valid in epub, just remove them
         /// </summary>
-        /// <param name="doc"></param>
+        /// <param name="doc">XHTML document object</param>
         private void RemoveInvalidNamespace(XmlDocument doc)
         {
             HashSet<string> validNamespaces = [
@@ -128,18 +356,31 @@ namespace EpubSanitizerCore.Filters
         }
 
         /// <summary>
-        /// 
+        /// Make sure urls are proper escaped
         /// </summary>
         /// <param name="doc">XHTML document object</param>
-        private void EscapeUrl(XmlDocument doc)
+        /// <param name="file">file path in archive</param>
+        private void EscapeUrl(XmlDocument doc, string file)
         {
             string[] hrefTags = ["a", "area", "base", "link"];
             foreach (string tag in hrefTags)
             {
                 foreach (XmlElement element in doc.GetElementsByTagName(tag).Cast<XmlElement>().ToArray())
                 {
+                    if (element.HasAttribute("referrer"))
+                    {
+                        if (((string[])["no-referrer", "no-referrer-when-downgrade", "origin", "origin-when-cross-origin", "same-origin", "strict-origin", "strict-origin-when-cross-origin", "unsafe-url"]).Contains(element.GetAttribute("referrer")))
+                        {
+                            element.SetAttribute("referrerpolicy", element.GetAttribute("referrer"));
+                        }
+                        element.RemoveAttribute("referrer");
+                    }
                     if (element.HasAttribute("href"))
                     {
+                        if (element.GetAttribute("href").StartsWith("//"))
+                        {
+                            element.SetAttribute("href", "https:" + element.GetAttribute("href"));
+                        }
                         if (element.GetAttribute("href").StartsWith("http"))
                         {
                             try
@@ -152,6 +393,25 @@ namespace EpubSanitizerCore.Filters
                                 Instance.Logger($"Invalid URI format in href attribute has been removed: {element.GetAttribute("href")}");
                                 element.RemoveAttribute("href");
                             }
+                            goto checkhref;
+                        }
+                        if (element.HasAttribute("href") && !element.GetAttribute("href").StartsWith("data") && !element.GetAttribute("href").StartsWith('#') && !element.GetAttribute("href").StartsWith("mailto:") && !element.GetAttribute("href").StartsWith('#') && !Instance.FileStorage.FileExists(Utils.PathUtil.ComposeFromRelativePath(file, element.GetAttribute("href")).Split('#')[0]))
+                        {
+                            Instance.Logger($"Remove URL not exist: {element.GetAttribute("href")}");
+                            element.RemoveAttribute("href");
+                        }
+                    checkhref:
+                        if (element.Name == "a" && !element.HasAttribute("href"))
+                        {
+                            string[] toremove = ["download", "target", "rel", "type", "referrerpolicy"];
+                            foreach (string attr in toremove)
+                            {
+                                element.RemoveAttribute(attr);
+                            }
+                            // a element must have href, use span instead
+                            XmlElement span = doc.CreateElement("span", doc.DocumentElement.NamespaceURI);
+                            Utils.XmlUtil.CopyTo(element, span);
+                            element.ParentNode.ReplaceChild(span, element);
                         }
                     }
                 }
@@ -210,7 +470,7 @@ namespace EpubSanitizerCore.Filters
             {
                 foreach (XmlElement item in spine.GetElementsByTagName("itemref"))
                 {
-                    if (item.GetAttribute("idref") == docid && item.HasAttribute("linear") && item.GetAttribute("linear").ToLowerInvariant() == "no")
+                    if (item.GetAttribute("idref") == docid && item.HasAttribute("linear") && item.GetAttribute("linear").Equals("no", StringComparison.InvariantCultureIgnoreCase))
                     {
                         found = true;
                         break;
@@ -293,10 +553,9 @@ namespace EpubSanitizerCore.Filters
         /// <param name="doc">XHTML document object</param>
         private static void FixBlockquote(XmlDocument doc)
         {
-            string[] disallowParents = ["h1", "h2", "h3", "h4", "h5", "h6"];
             foreach (XmlElement element in doc.GetElementsByTagName("blockquote").Cast<XmlElement>().ToArray())
             {
-                if (disallowParents.Contains((element.ParentNode as XmlElement).Name.ToLowerInvariant()))
+                if (HeadItems.Contains((element.ParentNode as XmlElement).Name.ToLowerInvariant()))
                 {
                     // replace with q element
                     XmlElement q = doc.CreateElement("q", doc.DocumentElement.NamespaceURI);
@@ -442,7 +701,7 @@ namespace EpubSanitizerCore.Filters
         {
             foreach (XmlElement element in doc.GetElementsByTagName("img").Cast<XmlElement>().ToArray())
             {
-                if (element.HasAttribute("src") && !Instance.FileStorage.FileExists(PathUtil.ComposeFromRelativePath(file, element.GetAttribute("src"))))
+                if (element.HasAttribute("src") && !Instance.FileStorage.FileExists(PathUtil.ComposeFromRelativePath(file, element.GetAttribute("src"))) && !Utils.PathUtil.IsHttpOrHttpsUrl(element.GetAttribute("src")) && !element.GetAttribute("src").StartsWith("data"))
                 {
                     Instance.Logger($"Removed invalid image {element.GetAttribute("src")} in {file}");
                     if (element.HasAttribute("alt") && element.GetAttribute("alt") != string.Empty)
@@ -467,11 +726,20 @@ namespace EpubSanitizerCore.Filters
         {
             foreach (XmlElement element in doc.GetElementsByTagName("*").Cast<XmlElement>().ToArray())
             {
-                if (element.Prefix == string.Empty && XmlUtil.IsInline(element.LocalName))
+                if (element.NamespaceURI != doc.DocumentElement.NamespaceURI)
+                {
+                    continue;
+                }
+                // p is a special case of block element cannot allow block element inside
+                if (element.Prefix == string.Empty && (element.LocalName == "p" || XmlUtil.IsInline(element.LocalName)))
                 {
                     bool containsBlock = false;
                     foreach (XmlElement child in element.GetElementsByTagName("*"))
                     {
+                        if (child.NamespaceURI != doc.DocumentElement.NamespaceURI)
+                        {
+                            continue;
+                        }
                         if (child.Prefix == string.Empty && !XmlUtil.IsInline(child.LocalName))
                         {
                             containsBlock = true;
@@ -576,14 +844,13 @@ namespace EpubSanitizerCore.Filters
                 }
             }
         }
-
         /// <summary>
-        /// Fix duplicate note ID created by Duokan
+        /// Remove all id from child which is same as parent
         /// </summary>
         /// <param name="doc">xhtml XmlDocument object</param>
-        private static void FixDuokanNoteID(XmlDocument doc)
+        private static void DedupId(XmlDocument doc, string tag)
         {
-            foreach (XmlElement element in (doc.GetElementsByTagName("body")[0] as XmlElement).GetElementsByTagName("aside"))
+            foreach (XmlElement element in (doc.GetElementsByTagName("body")[0] as XmlElement).GetElementsByTagName(tag))
             {
                 string id = element.GetAttribute("id");
                 if (id != string.Empty)
@@ -598,6 +865,7 @@ namespace EpubSanitizerCore.Filters
                 }
             }
         }
+
 
         internal override void PostProcess()
         {
@@ -615,7 +883,7 @@ namespace EpubSanitizerCore.Filters
                     foreach (XmlElement element in (xhtmlDoc.GetElementsByTagName("body")[0] as XmlElement).GetElementsByTagName("a"))
                     {
                         string link = element.GetAttribute("href");
-                        if (link.Contains('#'))
+                        if (link.Contains('#') && !link.StartsWith('#'))
                         {
                             string[] parts = link.Split('#');
                             if (parts.Length == 2 && parts[1] != string.Empty && (!IDList.TryGetValue(PathUtil.ComposeFromRelativePath(file, parts[0]), out ConcurrentBag<string>? value) || !value.Contains(parts[1])))
@@ -656,6 +924,7 @@ namespace EpubSanitizerCore.Filters
             Console.WriteLine("General filter is a default filter that does basic processing for standard fixing.");
             Console.WriteLine("Options:");
             Console.WriteLine("  --general.replaceInlineWithBlock=true  Whether to replace an inline element containing block element with div. Default is true, disable it may improve performance.");
+            Console.WriteLine("  --general.fullIdDedup=true  Whether to perform full ID deduplication, which will remove id tag on any element with same id as parents. Resource intensive action, default is false.");
         }
     }
 }

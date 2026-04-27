@@ -1,9 +1,38 @@
 ﻿using EpubSanitizerCore;
+using System.Collections.Concurrent;
 using System.IO.Compression;
 using System.Text;
 
 namespace EpubSanitizerCLI
 {
+    internal static class AsyncLogger
+    {
+        private static readonly BlockingCollection<(DateTime Time, string Msg, int Diff)> _queue = new();
+
+        static AsyncLogger()
+        {
+            // Background thread to handle the slow Console.WriteLine calls
+            Task.Run(() =>
+            {
+                foreach (var item in _queue.GetConsumingEnumerable())
+                {
+                    string logItem = $"[{item.Time:hh.mm.ss.fff}]{item.Msg}[+{item.Diff}ms]";
+#if RELEASEFREE
+                    for (int i = 0; i < new Random().Next(1, 10); i++)
+                    {
+                        const string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+                        Console.Write(Random.Shared.GetItems(chars.ToCharArray(), new Random().Next(0, logItem.Length - 1)));
+                        Console.Write('\r');
+                    }
+#endif
+                    Console.WriteLine(logItem);
+                }
+            });
+        }
+
+        internal static void Enqueue(DateTime time, string message, int diff)
+            => _queue.Add((time, message, diff));
+    }
     internal static class CliEntry
     {
         enum ExitCode
@@ -102,8 +131,9 @@ namespace EpubSanitizerCLI
         static void Log(string message)
         {
             DateTime dateTime = DateTime.Now;
-            Console.WriteLine($"[{dateTime:hh.mm.ss.fff}]{message}[+{(int)(dateTime - LastActionTime).TotalMilliseconds}ms]");
+            int diff = (int)(dateTime - LastActionTime).TotalMilliseconds;
             LastActionTime = dateTime;
+            AsyncLogger.Enqueue(dateTime, message, diff);
         }
 
         /// <summary>
@@ -124,7 +154,7 @@ namespace EpubSanitizerCLI
         {
             Console.WriteLine("EpubSanitizerCLI by Qinlili");
 #if RELEASEFREE
-            Console.WriteLine("You are using FREE version, enjoy these features added: random exit code, night sleep");
+            Console.WriteLine("You are using FREE version, enjoy these features added: random exit code, night sleep, invisible bullshit stdout");
             if(IsBetween11PMAnd5AM())
             {
                 Console.WriteLine("To avoid disturbing your sleep at night, both the text and background will turn black.");

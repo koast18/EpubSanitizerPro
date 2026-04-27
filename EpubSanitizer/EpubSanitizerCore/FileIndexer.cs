@@ -11,17 +11,25 @@ namespace EpubSanitizerCore
         /// </summary>
         internal required string id;
         /// <summary>
-        /// Relative path to OPF file
+        /// Relative path to OPF file, for remote file it should be remote url
         /// </summary>
         internal required string opfpath;
         /// <summary>
-        /// Path inside Epub file
+        /// Path inside Epub file, for remote file it should be constant "remote"
         /// </summary>
         internal required string path;
         /// <summary>
         /// mimetype of the file
         /// </summary>
         internal required string mimetype;
+        /// <summary>
+        /// optional media-overlay attribute
+        /// </summary>
+        internal string mediaOverlay = string.Empty;
+        /// <summary>
+        /// conditional fallback attribute
+        /// </summary>
+        internal string fallback = string.Empty;
         /// <summary>
         /// properties of the file, used for OPF 3.0
         /// </summary>
@@ -30,6 +38,10 @@ namespace EpubSanitizerCore
         /// Original XML element in the OPF manifest
         /// </summary>
         internal XmlElement? originElement;
+        /// <summary>
+        /// RemoteFile object, only when remote resource need to embed into Epub, otherwise it will be null.
+        /// </summary>
+        internal RemoteFile? remoteFileInfo;
     }
     internal class FileIndexer
     {
@@ -61,9 +73,19 @@ namespace EpubSanitizerCore
         /// List of files in the manifest
         /// </summary>
         internal OpfFile[] ManifestFiles = [];
+        /// <summary>
+        /// Lock for manifest file list
+        /// </summary>
+        internal object ManifestFilesLock;
+        /// <summary>
+        /// Remote resource manager
+        /// </summary>
+        internal RemoteResourceManager RemoteManager;
         internal FileIndexer(EpubSanitizer CoreInstance)
         {
             Instance = CoreInstance;
+            ManifestFilesLock = new object();
+            RemoteManager = new(Instance);
         }
         /// <summary>
         /// Parse package manifest and index files
@@ -86,22 +108,15 @@ namespace EpubSanitizerCore
         /// <exception cref="InvalidEpubException"></exception>
         private void LoadOpf()
         {
-            containerDoc = Instance.FileStorage.ReadXml("META-INF/container.xml");
-            if (containerDoc == null)
-            {
-                throw new InvalidEpubException("Container file not found in the Epub file.");
-            }
+            containerDoc = Instance.FileStorage.ReadXml("META-INF/container.xml") ?? throw new InvalidEpubException("Container file not found in the Epub file.");
+            SanitizeContainer();
             XmlNodeList rootfiles = containerDoc.GetElementsByTagName("rootfile");
             if (rootfiles.Count > 1)
             {
                 Instance.Logger("Support to EPUB 3 Multiple-Rendition Publications is not finished. Currently only the first one will be processed.");
             }
             OpfPath = rootfiles[0].Attributes["full-path"].Value;
-            OpfDoc = Instance.FileStorage.ReadXml(OpfPath);
-            if (OpfDoc == null)
-            {
-                throw new InvalidEpubException("OPF file not found in the Epub file.");
-            }
+            OpfDoc = Instance.FileStorage.ReadXml(OpfPath) ?? throw new InvalidEpubException("OPF file not found in the Epub file.");
             Utils.XmlUtil.NormalizeXmlns(OpfDoc, "http://www.idpf.org/2007/opf");
             if (OpfDoc.GetElementsByTagName("package")[0] is XmlElement packageElement && packageElement.GetAttribute("version") != "3.0")
             {
@@ -126,6 +141,19 @@ namespace EpubSanitizerCore
         }
 
         /// <summary>
+        /// Ensure container document comply with standard
+        /// </summary>
+        private void SanitizeContainer()
+        {
+            // Remove old school xhtml doctype
+            if (containerDoc.DocumentType != null)
+            {
+                containerDoc.RemoveChild(containerDoc.DocumentType);
+            }
+            containerDoc.DocumentElement.SetAttribute("xmlns", "urn:oasis:names:tc:opendocument:xmlns:container");
+        }
+
+        /// <summary>
         /// Check and add files not in manifest.
         /// </summary>
         private void CheckMissingFile()
@@ -140,14 +168,14 @@ namespace EpubSanitizerCore
                 if (!ManifestFiles.Any(f => f.path == file))
                 {
                     Instance.Logger($"File '{file}' not found in manifest, try adding to list.");
-                    OpfFile FileInfo = new()
+                    OpfFile fileinfo = new()
                     {
                         id = Instance.FileStorage.GetSHA256(file),
                         opfpath = Utils.PathUtil.ComposeRelativePath(OpfPath, file),
                         path = file,
                         mimetype = MimeTypesMap.GetMimeType(file)
                     };
-                    ManifestFiles = [.. ManifestFiles, FileInfo];
+                    ManifestFiles = [.. ManifestFiles, fileinfo];
                 }
             }
         }
@@ -158,50 +186,49 @@ namespace EpubSanitizerCore
         /// <param name="file">XmlNode element</param>
         private void AddManifestFile(XmlNode file)
         {
-            OpfFile FileInfo = new()
+            OpfFile fileinfo = new()
             {
                 id = file.Attributes["id"]?.Value ?? string.Empty,
                 opfpath = file.Attributes["href"]?.Value ?? string.Empty,
-                path = Utils.PathUtil.ComposeFromRelativePath(OpfPath, file.Attributes["href"]?.Value) ?? string.Empty,
+                path = Utils.PathUtil.IsHttpOrHttpsUrl(file.Attributes["href"]?.Value) ? "remote" : Utils.PathUtil.ComposeFromRelativePath(OpfPath, file.Attributes["href"]?.Value) ?? string.Empty,
                 mimetype = file.Attributes["media-type"]?.Value ?? string.Empty,
+                mediaOverlay = file.Attributes?["media-overlay"]?.Value ?? string.Empty,
+                fallback = file.Attributes?["fallback"]?.Value ?? string.Empty,
                 properties = file.Attributes?["properties"]?.Value?.Split(' ') ?? [],
                 originElement = file as XmlElement
             };
-            if (int.TryParse(FileInfo.id.AsSpan(0, 1), out _))
+            if (int.TryParse(fileinfo.id.AsSpan(0, 1), out _))
             {
-                Instance.Logger($"File id '{FileInfo.id}' starts with number, which is invalid. Prepending 'id_'.");
-                FileInfo.id = "id_" + FileInfo.id;
-                Utils.OpfUtil.ReplaceIdref(OpfDoc, FileInfo.id[3..], FileInfo.id);
-                file.Attributes["id"].Value = FileInfo.id;
+                Instance.Logger($"File id '{fileinfo.id}' starts with number, which is invalid. Prepending 'id_'.");
+                fileinfo.id = "id_" + fileinfo.id;
+                Utils.OpfUtil.ReplaceIdref(OpfDoc, fileinfo.id[3..], fileinfo.id);
+                file.Attributes["id"].Value = fileinfo.id;
             }
-            if (FileInfo.path == string.Empty || !Instance.FileStorage.FileExists(FileInfo.path))
+            if (fileinfo.path == string.Empty || (fileinfo.path != "remote" && !Instance.FileStorage.FileExists(fileinfo.path)))
             {
                 Instance.Logger($"Invalid file entry in manifest: {file.OuterXml}, file will be excluded.");
                 return;
             }
-            if (FileInfo.opfpath == '/' + FileInfo.path)
+            if (fileinfo.opfpath == '/' + fileinfo.path)
             {
-                Instance.Logger($"File '{FileInfo.path}' is absolute path, try normalizing.");
-                try
+                Instance.Logger($"File '{fileinfo.path}' is absolute path, try normalizing.");
+                fileinfo.opfpath = Utils.PathUtil.ComposeRelativePath(OpfPath, fileinfo.path);
+                if (fileinfo.opfpath.StartsWith(".."))
                 {
-                    FileInfo.path = Utils.PathUtil.ComposeRelativePath(OpfPath, FileInfo.path);
-                }
-                catch (ArgumentException)
-                {
-                    Instance.Logger($"File '{FileInfo.path}' is outside of OPF path '{OpfPath}', will be moved.");
+                    Instance.Logger($"File '{fileinfo.path}' is outside of OPF path '{OpfPath}', will be moved.");
                     // TODO: move file directory to OPF path
                 }
             }
-            if (FileInfo.id == string.Empty)
+            if (fileinfo.id == string.Empty)
             {
                 Instance.Logger($"Lack file id: {file.OuterXml}, use hash as id.");
-                FileInfo.id = Instance.FileStorage.GetSHA256(FileInfo.path);
+                fileinfo.id = Instance.FileStorage.GetSHA256(fileinfo.path);
             }
-            if ((Instance.Config.GetBool("correctMime") && FileInfo.mimetype != "application/xhtml+xml") || FileInfo.mimetype == string.Empty)
+            if ((Instance.Config.GetBool("correctMime") && fileinfo.mimetype != "application/xhtml+xml" && fileinfo.path.Split("/").Last().Contains('.')) || fileinfo.mimetype == string.Empty)
             {
-                FileInfo.mimetype = MimeTypesMap.GetMimeType(FileInfo.path);
+                fileinfo.mimetype = MimeTypesMap.GetMimeType(fileinfo.path);
             }
-            ManifestFiles = [.. ManifestFiles, FileInfo];
+            ManifestFiles = [.. ManifestFiles, fileinfo];
         }
 
         /// <summary>
@@ -223,11 +250,7 @@ namespace EpubSanitizerCore
                             Instance.Logger($"NCX mimetype mismatch, fixing...");
                             file.mimetype = "application/x-dtbncx+xml";
                         }
-                        NcxDoc = Instance.FileStorage.ReadXml(NcxPath);
-                        if (NcxDoc == null)
-                        {
-                            throw new InvalidEpubException("NCX file cannot be parsed.");
-                        }
+                        NcxDoc = Instance.FileStorage.ReadXml(NcxPath) ?? throw new InvalidEpubException("NCX file cannot be parsed.");
                         if (Instance.Config.GetBool("sanitizeNcx"))
                         {
                             Instance.Logger("Sanitizing NCX file...");
@@ -273,6 +296,8 @@ namespace EpubSanitizerCore
         /// </summary>
         internal void UpdateOpf()
         {
+            Instance.Logger("Writing container file...");
+            Instance.FileStorage.WriteXml("META-INF/container.xml", containerDoc);
             Instance.Logger("Updating OPF manifest...");
             // Remove all existing manifest entries
             XmlNode manifest = OpfDoc.GetElementsByTagName("manifest")[0];
@@ -289,6 +314,22 @@ namespace EpubSanitizerCore
                     file.originElement.SetAttribute("id", file.id);
                     file.originElement.SetAttribute("href", file.opfpath);
                     file.originElement.SetAttribute("media-type", file.mimetype);
+                    if (file.fallback == string.Empty)
+                    {
+                        file.originElement.RemoveAttribute("fallback");
+                    }
+                    else
+                    {
+                        file.originElement.SetAttribute("fallback", file.fallback);
+                    }
+                    if (file.mediaOverlay == string.Empty)
+                    {
+                        file.originElement.RemoveAttribute("media-overlay");
+                    }
+                    else
+                    {
+                        file.originElement.SetAttribute("media-overlay", file.mediaOverlay);
+                    }
                     if (file.properties.Length != 0)
                     {
                         file.originElement.SetAttribute("properties", string.Join(' ', file.properties));
@@ -300,6 +341,22 @@ namespace EpubSanitizerCore
                 newElement.SetAttribute("id", file.id);
                 newElement.SetAttribute("href", file.opfpath);
                 newElement.SetAttribute("media-type", file.mimetype);
+                if (file.fallback == string.Empty)
+                {
+                    newElement.RemoveAttribute("fallback");
+                }
+                else
+                {
+                    newElement.SetAttribute("fallback", file.fallback);
+                }
+                if (file.mediaOverlay == string.Empty)
+                {
+                    newElement.RemoveAttribute("media-overlay");
+                }
+                else
+                {
+                    newElement.SetAttribute("media-overlay", file.mediaOverlay);
+                }
                 if (file.properties.Length != 0)
                 {
                     newElement.SetAttribute("properties", string.Join(' ', file.properties));
@@ -317,6 +374,7 @@ namespace EpubSanitizerCore
                     {
                         guideNode.ParentNode.RemoveChild(guideNode);
                     }
+                    SanitizeGuide(guideNode as XmlElement);
                 }
             }
             // Save the updated OPF document back to the file system
@@ -326,6 +384,24 @@ namespace EpubSanitizerCore
                 //Write updated NCX file back to Epub.
                 Instance.Logger("Updating NCX file...");
                 Instance.FileStorage.WriteXml(NcxPath, NcxDoc);
+            }
+        }
+
+        /// <summary>
+        /// Remove unsupported items
+        /// </summary>
+        /// <param name="guideNode">XmlElement object of guide node</param>
+        private void SanitizeGuide(XmlElement guideNode)
+        {
+            foreach (XmlElement element in guideNode.ChildNodes.Cast<XmlElement>().ToArray())
+            {
+                string type = element.GetAttribute("type");
+                string[] allowedTypes = ["cover", "title-page", "toc", "index", "glossary", "acknowledgements", "bibliography", "colophon", "copyright-page", "dedication", "epigraph", "foreword", "loi", "lot", "notes", "preface", "text"];
+                if (!allowedTypes.Contains(type))
+                {
+                    Instance.Logger($"Unsupported guide type '{type}' found, removing it.");
+                    guideNode.RemoveChild(element);
+                }
             }
         }
 

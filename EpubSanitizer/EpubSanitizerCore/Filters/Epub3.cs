@@ -155,12 +155,99 @@ namespace EpubSanitizerCore.Filters
             CheckTitle(xhtmlDoc, file);
             CheckScripted(xhtmlDoc, file);
             CheckSvg(xhtmlDoc, file);
+            CheckMathml(xhtmlDoc, file);
             ProcessDeprecatedRoleAttributes(xhtmlDoc);
             ProcessAlignAttributes(xhtmlDoc);
             ProcessValignAttributes(xhtmlDoc);
+            ProcessImgSpaceAttributes(xhtmlDoc);
             ProcessTableCellAttributes(xhtmlDoc);
+            ConvertTt(xhtmlDoc);
             // Write back the processed content
             Instance.FileStorage.WriteXml(file, xhtmlDoc);
+        }
+
+        /// <summary>
+        /// Use code element to replace deprecated tt element
+        /// </summary>
+        /// <param name="xhtmlDoc">xhtml document</param>
+        private static void ConvertTt(XmlDocument xhtmlDoc)
+        {
+            foreach (XmlElement tt in xhtmlDoc.GetElementsByTagName("tt").Cast<XmlElement>().ToArray())
+            {
+                // Convert to code element
+                XmlElement code = xhtmlDoc.CreateElement("code", xhtmlDoc.DocumentElement.NamespaceURI);
+                Utils.XmlUtil.CopyTo(tt, code);
+                tt.ParentNode.ReplaceChild(code, tt);
+            }
+        }
+
+
+        /// <summary>
+        /// A helper method to add element to dictionary with list value, if key already exist, add to the list, otherwise create a new list. This is used for processing attributes in batch to reduce the number of style elements created in head.
+        /// </summary>
+        /// <param name="dict">The dictionary to add the element to.</param>
+        /// <param name="key">The key to look for in the dictionary.</param>
+        /// <param name="element">The element to add to the list associated with the key.</param>
+        private static void AddToDictionary(Dictionary<string, List<XmlElement>> dict, string key, XmlElement element)
+        {
+            if (dict.TryGetValue(key, out List<XmlElement>? value))
+            {
+                value.Add(element);
+            }
+            else
+            {
+                dict[key] = [element];
+            }
+        }
+
+        /// <summary>
+        /// Remove vspace and hspace attributes from img elements and convert them to CSS styles to comply with Epub 3 standards.
+        /// </summary>
+        /// <param name="doc">XmlDocument object</param>
+        private static void ProcessImgSpaceAttributes(XmlDocument doc)
+        {
+            Dictionary<string, List<XmlElement>> RecordV = [];
+            Dictionary<string, List<XmlElement>> RecordH = [];
+            foreach (XmlElement img in doc.GetElementsByTagName("img").Cast<XmlElement>().ToArray())
+            {
+                if (img.HasAttribute("vspace"))
+                {
+                    AddToDictionary(RecordV, img.GetAttribute("vspace"), img);
+                }
+                if (img.HasAttribute("hspace"))
+                {
+                    AddToDictionary(RecordH, img.GetAttribute("hspace"), img);
+                }
+            }
+            // Generate CSS styles for each unique vspace value
+            StringBuilder cssStyles = new();
+            foreach (var value in RecordV.Keys)
+            {
+                string style = $@".vspace-{value}{{
+    margin-top: {value}px;
+    margin-bottom: {value}px;
+}}";
+                cssStyles.AppendLine(style);
+                foreach (var table in RecordV[value])
+                {
+                    XmlUtil.AddCssClass(table, $"vspace-{value}");
+                    table.RemoveAttribute("vspace");
+                }
+            }
+            foreach (var value in RecordH.Keys)
+            {
+                string style = $@".hspace-{value}{{
+    margin-left: {value}px;
+    margin-right: {value}px;
+}}";
+                cssStyles.AppendLine(style);
+                foreach (var table in RecordH[value])
+                {
+                    XmlUtil.AddCssClass(table, $"hspace-{value}");
+                    table.RemoveAttribute("hspace");
+                }
+            }
+            Utils.XmlUtil.AddCssToHead(doc, cssStyles);
         }
 
         /// <summary>
@@ -170,7 +257,7 @@ namespace EpubSanitizerCore.Filters
         /// <param name="file">file path</param>
         private void CheckScripted(XmlDocument doc, string file)
         {
-            OpfFile item = Utils.OpfUtil.GetItemFromManifest(Instance.Indexer.ManifestFiles, file);
+            OpfFile item = Utils.OpfUtil.GetItemFromManifestAbsolute(Instance.Indexer.ManifestFiles, file);
             if (doc.GetElementsByTagName("script").Count > 0)
             {
                 if (item != null && !item.properties.Contains("scripted"))
@@ -194,7 +281,7 @@ namespace EpubSanitizerCore.Filters
         /// <param name="file">file path</param>
         private void CheckSvg(XmlDocument doc, string file)
         {
-            OpfFile item = Utils.OpfUtil.GetItemFromManifest(Instance.Indexer.ManifestFiles, file);
+            OpfFile item = Utils.OpfUtil.GetItemFromManifestAbsolute(Instance.Indexer.ManifestFiles, file);
             if (doc.GetElementsByTagName("svg").Count > 0 || doc.GetElementsByTagName("svg", "http://www.w3.org/2000/svg").Count > 0)
             {
                 if (item != null && !item.properties.Contains("svg"))
@@ -211,6 +298,38 @@ namespace EpubSanitizerCore.Filters
             }
         }
 
+        /// <summary>
+        /// Check if there is any mathml element in xhtml file, if yes, ensure mathml in properties in OPF manifest
+        /// </summary>
+        /// <param name="doc">XmlDocument object</param>
+        /// <param name="file">file path</param>
+        private void CheckMathml(XmlDocument doc, string file)
+        {
+            OpfFile item = Utils.OpfUtil.GetItemFromManifestAbsolute(Instance.Indexer.ManifestFiles, file);
+            if (doc.GetElementsByTagName("math").Count > 0 || doc.GetElementsByTagName("math", "http://www.w3.org/1998/Math/MathML").Count > 0)
+            {
+                if (item != null && !item.properties.Contains("mathml"))
+                {
+                    item.properties = [.. item.properties, "mathml"];
+                }
+            }
+            else
+            {
+                if (item != null && item.properties.Contains("mathml"))
+                {
+                    item.properties = [.. item.properties.Where(p => p != "mathml")];
+                }
+            }
+            foreach (XmlElement math in doc.GetElementsByTagName("math").Cast<XmlElement>().ToArray())
+            {
+                if (math.GetAttribute("xmlns") != "http://www.w3.org/1998/Math/MathML" && math.NamespaceURI != "http://www.w3.org/1998/Math/MathML")
+                {
+                    XmlElement mathElement = doc.CreateElement(math.LocalName, "http://www.w3.org/1998/Math/MathML");
+                    Utils.XmlUtil.CopyToWithNewNamespace(math, mathElement, "m", "http://www.w3.org/1998/Math/MathML");
+                    math.ParentNode.ReplaceChild(mathElement, math);
+                }
+            }
+        }
         /// <summary>
         /// Check title element in xhtml file, if not present, add one based on ncx or first text node
         /// </summary>
@@ -297,58 +416,83 @@ namespace EpubSanitizerCore.Filters
             // Find all table elements with cellpadding or cellspacing attributes and classify by their values
             Dictionary<string, List<XmlElement>> PaddingRecord = [];
             Dictionary<string, List<XmlElement>> SpacingRecord = [];
+            StringBuilder cssStyles = new();
             foreach (XmlElement table in doc.GetElementsByTagName("table").Cast<XmlElement>().ToArray())
             {
                 if (table.HasAttribute("border"))
                 {
-                    if (int.TryParse(table.GetAttribute("border"), out int borderValue))
-                    {
-                        if (borderValue > 0)
-                        {
-                            table.SetAttribute("border", "1");
-                        }
-                        else if (borderValue == 0)
-                        {
-                            table.SetAttribute("border", "");
-                        }
-                    }
-                    else
+                    if (!int.TryParse(table.GetAttribute("border"), out int borderValue))
                     {
                         table.RemoveAttribute("border");
+                    }
+                    else if (borderValue >= 0)
+                    {
+                        table.SetAttribute("border", borderValue > 0 ? "1" : "");
+                    }
+                }
+                if (table.HasAttribute("frame"))
+                {
+                    string frame = table.GetAttribute("frame").ToLower();
+                    table.RemoveAttribute("frame");
+                    string borderStyle = frame switch
+                    {
+                        "void" => "border: none;",
+                        "above" => "border-top: 1px solid black;",
+                        "below" => "border-bottom: 1px solid black;",
+                        "hsides" => "border-top: 1px solid black; border-bottom: 1px solid black;",
+                        "vsides" => "border-left: 1px solid black; border-right: 1px solid black;",
+                        "lhs" => "border-left: 1px solid black;",
+                        "rhs" => "border-right: 1px solid black;",
+                        "box" or "border" => "border: 1px solid black;",
+                        _ => ""
+                    };
+                    table.SetAttribute("style", $"{borderStyle}{table.GetAttribute("style")}");
+                }
+                if (table.HasAttribute("rules"))
+                {
+                    string rules = table.GetAttribute("rules").ToLower();
+                    table.RemoveAttribute("rules");
+                    if (cssStyles.Length == 0)
+                    {
+                        cssStyles.AppendLine(@"[class*=""table-rules-""] {
+    border-collapse: collapse;
+}
+.table-rules-all th, .table-rules-all td { border: 1px solid black; }
+.table-rules-rows th, .table-rules-rows td { border-top: 1px solid black; border-bottom: 1px solid black; }
+.table-rules-cols th, .table-rules-cols td { border-left: 1px solid black; border-right: 1px solid black; }
+.table-rules-none th, .table-rules-none td { border: none; }");
+                    }
+                    XmlUtil.AddCssClass(table, $"table-rules-{rules}");
+                }
+                foreach (XmlElement child in table.GetElementsByTagName("*").Cast<XmlElement>().ToArray().Append(table))
+                {
+                    string[] attrs = ["width", "height"];
+                    foreach (string attr in attrs)
+                    {
+                        if (child.HasAttribute(attr))
+                        {
+                            child.SetAttribute("style", $"{attr}: {child.GetAttribute(attr)}{(child.GetAttribute(attr).EndsWith('%') ? "" : "px")};" + child.GetAttribute("style"));
+                            child.RemoveAttribute(attr);
+                        }
                     }
                 }
                 if (table.HasAttribute("cellpadding"))
                 {
                     string paddingValue = new([.. table.GetAttribute("cellpadding").Where(c => char.IsDigit(c) || c == '%')]);
-                    if (PaddingRecord.ContainsKey(paddingValue))
-                    {
-                        PaddingRecord[paddingValue].Add(table);
-                    }
-                    else
-                    {
-                        PaddingRecord[paddingValue] = [table];
-                    }
+                    AddToDictionary(PaddingRecord, paddingValue, table);
                 }
                 if (table.HasAttribute("cellspacing"))
                 {
-                    string spacingValue = new([.. table.GetAttribute("cellpadding").Where(c => char.IsDigit(c) || c == '%')]);
-                    if (SpacingRecord.ContainsKey(spacingValue))
-                    {
-                        SpacingRecord[spacingValue].Add(table);
-                    }
-                    else
-                    {
-                        SpacingRecord[spacingValue] = [table];
-                    }
+                    string spacingValue = new([.. table.GetAttribute("cellspacing").Where(c => char.IsDigit(c) || c == '%')]);
+                    AddToDictionary(SpacingRecord, spacingValue, table);
                 }
             }
             // Generate CSS styles for each unique cellpadding and cellspacing value
-            StringBuilder cssStyles = new();
             foreach (var padding in PaddingRecord.Keys)
             {
                 string style = $@".cellpadding{padding} td,
 .cellpadding{padding} th {{
-    padding: {padding}px;
+    padding: {padding}{(padding.EndsWith('%') ? "" : "px")};
 }}";
                 cssStyles.AppendLine(style);
                 // Apply the class to all tables with this cellpadding
@@ -361,7 +505,7 @@ namespace EpubSanitizerCore.Filters
             foreach (var spacing in SpacingRecord.Keys)
             {
                 string style = $@".cellspacing{spacing} {{
-    border-spacing: {spacing}px;
+    border-spacing: {spacing}{(spacing.EndsWith('%') ? "" : "px")};
     border-collapse: separate;
 }}";
                 cssStyles.AppendLine(style);
@@ -372,16 +516,7 @@ namespace EpubSanitizerCore.Filters
                     table.RemoveAttribute("cellspacing");
                 }
             }
-            if (cssStyles.Length == 0)
-            {
-                return;
-            }
-            // If there are any styles, add them to the head of the document
-            XmlElement head = doc.GetElementsByTagName("head")[0] as XmlElement;
-            XmlElement styleElement = doc.CreateElement("style", "http://www.w3.org/1999/xhtml");
-            styleElement.SetAttribute("type", "text/css");
-            styleElement.InnerText = cssStyles.ToString();
-            head.AppendChild(styleElement);
+            Utils.XmlUtil.AddCssToHead(doc, cssStyles);
         }
 
         /// <summary>
@@ -395,14 +530,7 @@ namespace EpubSanitizerCore.Filters
             {
                 if (table.HasAttribute("valign"))
                 {
-                    if (Record.ContainsKey(table.GetAttribute("valign")))
-                    {
-                        Record[table.GetAttribute("valign")].Add(table);
-                    }
-                    else
-                    {
-                        Record[table.GetAttribute("valign")] = [table];
-                    }
+                    AddToDictionary(Record, table.GetAttribute("valign"), table);
                 }
             }
             // Generate CSS styles for each unique cellpadding and cellspacing value
@@ -419,16 +547,7 @@ namespace EpubSanitizerCore.Filters
                     table.RemoveAttribute("valign");
                 }
             }
-            if (cssStyles.Length == 0)
-            {
-                return;
-            }
-            // If there are any styles, add them to the head of the document
-            XmlElement head = doc.GetElementsByTagName("head")[0] as XmlElement;
-            XmlElement styleElement = doc.CreateElement("style", "http://www.w3.org/1999/xhtml");
-            styleElement.SetAttribute("type", "text/css");
-            styleElement.InnerText = cssStyles.ToString();
-            head.AppendChild(styleElement);
+            Utils.XmlUtil.AddCssToHead(doc, cssStyles);
         }
 
         /// <summary>
@@ -438,23 +557,20 @@ namespace EpubSanitizerCore.Filters
         private static void ProcessAlignAttributes(XmlDocument doc)
         {
             Dictionary<string, List<XmlElement>> Record = [];
-            foreach (XmlElement table in doc.GetElementsByTagName("*").Cast<XmlElement>().ToArray())
+            foreach (XmlElement element in doc.GetElementsByTagName("table").Cast<XmlElement>().ToArray())
             {
-                if (table.HasAttribute("align"))
+                foreach (XmlElement table in element.GetElementsByTagName("*").Cast<XmlElement>().ToArray().Append(element))
                 {
-                    if (table.GetAttribute("align") == "char")
+                    table.RemoveAttribute("char");
+                    if (table.HasAttribute("align"))
                     {
-                        table.RemoveAttribute("align");
-                        table.RemoveAttribute("char");
-                        continue;
-                    }
-                    if (Record.ContainsKey(table.GetAttribute("align")))
-                    {
-                        Record[table.GetAttribute("align")].Add(table);
-                    }
-                    else
-                    {
-                        Record[table.GetAttribute("align")] = [table];
+                        if (table.GetAttribute("align") == "char")
+                        {
+                            table.RemoveAttribute("align");
+                            table.RemoveAttribute("char");
+                            continue;
+                        }
+                        AddToDictionary(Record, table.GetAttribute("align"), table);
                     }
                 }
             }
@@ -472,16 +588,7 @@ namespace EpubSanitizerCore.Filters
                     table.RemoveAttribute("align");
                 }
             }
-            if (cssStyles.Length == 0)
-            {
-                return;
-            }
-            // If there are any styles, add them to the head of the document
-            XmlElement head = doc.GetElementsByTagName("head")[0] as XmlElement;
-            XmlElement styleElement = doc.CreateElement("style", "http://www.w3.org/1999/xhtml");
-            styleElement.SetAttribute("type", "text/css");
-            styleElement.InnerText = cssStyles.ToString();
-            head.AppendChild(styleElement);
+            Utils.XmlUtil.AddCssToHead(doc, cssStyles);
         }
 
         /// <summary>
@@ -492,7 +599,7 @@ namespace EpubSanitizerCore.Filters
         {
             foreach (var file in Instance.Indexer.ManifestFiles)
             {
-                if (file.mimetype == "application/xhtml+xml" && file.originElement.GetAttribute("properties").Split(' ').Contains("nav"))
+                if (file.mimetype == "application/xhtml+xml" && file.originElement != null && file.originElement.GetAttribute("properties").Split(' ').Contains("nav"))
                 {
                     if (Instance.Indexer.OpfDoc.GetElementsByTagName("spine")[0]?.Attributes?["page-map"] != null)
                     {

@@ -3,7 +3,10 @@ using AngleSharp.Css;
 using AngleSharp.Css.Dom;
 using AngleSharp.Css.Parser;
 using EpubSanitizerCore.Filters;
+using HeyRed.Mime;
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Xml;
 
@@ -88,11 +91,17 @@ namespace EpubSanitizerCore.Plugins.CssPlugin
                     {
                         string path = ConvertUrlToPath(decl.Value);
                         // Ignore data URLs and absolute URLs
-                        if (path.StartsWith("data") || path.StartsWith("http"))
+                        if (path.StartsWith("data"))
                         {
                             continue;
                         }
-                        if (!Instance.FileStorage.FileExists(Utils.PathUtil.ComposeFromRelativePath(file, path)))
+                        if (Utils.PathUtil.IsHttpOrHttpsUrl(path))
+                        {
+                            // Process remote resource if needed
+                            decl.Value = decl.Value.Replace(path, CheckRemoteResource(path, file));
+                            continue;
+                        }
+                        if (!Instance.Config.GetBool("publisherMode") && !Instance.FileStorage.FileExists(Utils.PathUtil.ComposeFromRelativePath(file, path)))
                         {
                             rule.RemoveProperty(decl.Name);
                             Instance.Logger($"Removed invalid URL in CSS property {decl.Name} targeting {path}");
@@ -113,15 +122,89 @@ namespace EpubSanitizerCore.Plugins.CssPlugin
                         // Simple check for invalid URL, can be improved
                         string path = ConvertUrlToPath(decl.Value);
                         // Ignore data URLs and absolute URLs
-                        if (path.StartsWith("data") || path.StartsWith("http"))
+                        if (path.StartsWith("data"))
                         {
                             continue;
                         }
-                        if (!Instance.FileStorage.FileExists(Utils.PathUtil.ComposeFromRelativePath(file, path)))
+                        if (Utils.PathUtil.IsHttpOrHttpsUrl(path))
+                        {
+                            // Process remote resource if needed
+                            decl.Value = decl.Value.Replace(path, CheckRemoteResource(path, file));
+                            continue;
+                        }
+                        if (!Instance.Config.GetBool("publisherMode") && !Instance.FileStorage.FileExists(Utils.PathUtil.ComposeFromRelativePath(file, path)))
                         {
                             rule.Style.RemoveProperty(decl.Name);
                             Instance.Logger($"Removed invalid URL in CSS property {decl.Name} targeting {path}");
                         }
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Check remote resource with user selected mode and return the sanitized url
+        /// </summary>
+        /// <param name="path">origin url</param>
+        /// <param name="file">file path in Epub</param>
+        /// <returns>sanitized url in selected mode from config</returns>
+        private string CheckRemoteResource(string path, string file)
+        {
+            if (Instance.Config.GetEnum<RemoteResourceMode>("remoteResourceMode") == RemoteResourceMode.SanitizeOnly)
+            {
+                lock (Instance.Indexer.ManifestFilesLock)
+                {
+                    OpfFile item = Utils.OpfUtil.GetItemFromManifestAbsolute(Instance.Indexer.ManifestFiles, file);
+                    if (item != null && !item.properties.Contains("remote-resources"))
+                    {
+                        item.properties = [.. item.properties, "remote-resources"];
+                    }
+                    // Only need to check manifest and return origin path
+                    if (Utils.OpfUtil.GetItemFromManifestRelative(Instance.Indexer.ManifestFiles, path) == null)
+                    {
+                        byte[] bytes = Encoding.UTF8.GetBytes(path);
+                        byte[] hashBytes = SHA256.HashData(bytes);
+                        OpfFile fileinfo = new()
+                        {
+                            id = "remote-file-" + Convert.ToHexString(hashBytes),
+                            opfpath = path,
+                            path = "remote",
+                            mimetype = MimeTypesMap.GetMimeType(path)
+                        };
+                        Instance.Indexer.ManifestFiles = [.. Instance.Indexer.ManifestFiles, fileinfo];
+                    }
+                }
+                return path;
+            }
+            else
+            {
+                // Convert to target embed url
+                if (Instance.Config.GetEnum<ResourceEmbedMode>("resourceEmbedMode") == ResourceEmbedMode.Base64)
+                {
+                    string base64url = Instance.Indexer.RemoteManager.GetDataUriFromUrl(path);
+                    if (!string.IsNullOrEmpty(base64url))
+                    {
+                        return base64url;
+                    }
+                    else
+                    {
+                        // Embed fail
+                        Instance.Logger($"Fail to embed {path}, keep url unchanged.");
+                        return path;
+                    }
+                }
+                else
+                {
+                    string absolutePath = Instance.Indexer.RemoteManager.AddToEpub(path);
+                    if (!string.IsNullOrEmpty(absolutePath))
+                    {
+                        return Utils.PathUtil.ComposeRelativePath(file, absolutePath);
+                    }
+                    else
+                    {
+                        // Embed fail
+                        Instance.Logger($"Fail to embed {path}, keep url unchanged.");
+                        return path;
                     }
                 }
             }
@@ -142,7 +225,7 @@ namespace EpubSanitizerCore.Plugins.CssPlugin
                     files.Add(file.path);
                 }
             }
-            return files.ToArray();
+            return [.. files];
         }
 
         /// <summary>
@@ -161,7 +244,7 @@ namespace EpubSanitizerCore.Plugins.CssPlugin
             string pattern = @"url\(['""]?(.*?)['""]?\)";
 
             // Create a Regex object.
-            Regex regex = new Regex(pattern);
+            Regex regex = new(pattern);
 
             // Perform the match.
             Match match = regex.Match(cssUrlString);
@@ -181,7 +264,7 @@ namespace EpubSanitizerCore.Plugins.CssPlugin
         {
             if (!DirectionCache.IsEmpty)
             {
-                Instance.Logger($"Updating dir property instead of direction css for {DirectionCache.Count()} selectors...");
+                Instance.Logger($"Updating dir property instead of direction css for {DirectionCache.Count} selectors...");
                 // Add dir property back to xhtml files if cached
                 Parallel.ForEach(Utils.PathUtil.GetAllXHTMLFiles(Instance), file =>
                 {

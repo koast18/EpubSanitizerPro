@@ -55,16 +55,16 @@ There is some little difference for Free and Pro version on CLI.
 | Community support  | ✅ | ✅ |
 | Commercial usage  | ✅ | ✅ |
 | Embed in your project  | ✅ | ✅ |
-| ReadyToRun acceleration  | ❌ | ✅ |
+| ReadyToRun acceleration  | ✅ | ✅ |
 | Random exit code  | ✅ | ❌ |
 | Black both console text and background at night  | ✅ | ❌ |
+| Random string in stdout but invisible for console  | ✅ | ❌ |
 | Support HarmonyOS NEXT  | ❌ | ❌ |
 
 You can get Pro version CLI by any of these methods:  
 
 - Become a sponsor on [GitHub](https://github.com/sponsors/qinlili23333)/[Buy Me a Coffee](https://www.buymeacoffee.com/qinlili)/[爱发电](https://afdian.com/a/qinliliAPP)  
 - **Mutual follow** with Qinlili on any platform  
-- Shopping on Amazon through Qinlili's [Affiliate Link](https://amzn.to/460zTkR)  
 - Download from Ctfile for free (with ads on download page)  
 - Submit your art to [QinliliGallery](https://github.com/qinlili23333/QinliliGallery) as illustrator and authorize Qinlili to use with [Qinlili Universal License](https://github.com/qinlili23333/QinliliUniversalLicense)  
 - Write articles or make videos on social media to promote any project made by Qinlili  
@@ -85,11 +85,17 @@ Plugins should be put in the same folder of core library or CLI executable. Due 
 
 There is a project `BuildAllPlugins`, after modifying plugin source code, build this project will copy all built plugins to CLI output folder.  
 
+## Extends
+
+Extends are not plugins. They do not add new features to EpubSanitizer, but you can use them for convenience in your projects. Plugins are loaded by EpubSanitizer itself with reflection and called by EpubSanitizer when needed, and you cannot call them directly. However, extends are libraries that your project can reference and call directly, while they can utilize internal classes inside EpubSanitizer to achive some features you cannot do with only public API.  
+
 ## Copyright tips
 
 This project will never add features that removing DRM or other copyright protection. We only focus on fixing problems in Epub files with no DRM.  
 
 If you want to report an issue about specific Epub file, please ensure it's legal to share the file in public.  
+
+If you cannot share the file, you can try to paste parts of the file related to the issue (errors and related lines from EpubCheck).  
 
 ## Contributing
 

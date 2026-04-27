@@ -138,8 +138,27 @@ namespace EpubSanitizerCore.Utils
                     spineArray.Add((OpfDoc.SelectSingleNode($"//*[@id='{idref}']") as XmlElement).GetAttribute("href"));
                 }
             }
-            return spineArray.ToArray();
+            return [.. spineArray];
         }
+
+        /// <summary>
+        /// Get OpfFile item from manifest by opf relative path, useful for remote resource
+        /// </summary>
+        /// <param name="files">file list in Indexer</param>
+        /// <param name="path">relative path in opf</param>
+        /// <returns>OpfFile item if exists, or null</returns>
+        internal static OpfFile? GetItemFromManifestRelative(OpfFile[] files, string path)
+        {
+            for (int i = 0; i < files.Length; i++)
+            {
+                if (files[i].opfpath == path)
+                {
+                    return files[i];
+                }
+            }
+            return null;
+        }
+
 
         /// <summary>
         /// Get OpfFile item from manifest by path
@@ -147,7 +166,7 @@ namespace EpubSanitizerCore.Utils
         /// <param name="files">file list in Indexer</param>
         /// <param name="path">path in epub</param>
         /// <returns>OpfFile item if exists, or null</returns>
-        internal static OpfFile? GetItemFromManifest(OpfFile[] files, string path)
+        internal static OpfFile? GetItemFromManifestAbsolute(OpfFile[] files, string path)
         {
             for (int i = 0; i < files.Length; i++)
             {
